@@ -12,6 +12,7 @@ members = [
     "crates/waku-a2a-transport",
     "crates/waku-a2a-node",
     "crates/waku-a2a-cli",
+    "crates/waku-a2a-mcp",
 ]
 
 [workspace.dependencies]
