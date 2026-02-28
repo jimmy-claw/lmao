@@ -13,13 +13,14 @@ members = [
     "crates/waku-a2a-node",
     "crates/waku-a2a-cli",
     "crates/waku-a2a-mcp",
+    "crates/lmao-ffi",
 ]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
 k256 = "0.13"
