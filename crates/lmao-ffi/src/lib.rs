@@ -9,24 +9,22 @@ use std::sync::OnceLock;
 
 use tokio::runtime::Runtime;
 use waku_a2a_node::WakuA2ANode;
-use waku_a2a_transport::nwaku_rest::NwakuRestTransport;
+use waku_a2a_transport::nwaku_rest::NwakuTransport;
 
 /// Global tokio runtime for async operations.
 fn runtime() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
-    RT.get_or_init(|| {
-        Runtime::new().expect("Failed to create tokio runtime")
-    })
+    RT.get_or_init(|| Runtime::new().expect("Failed to create tokio runtime"))
 }
 
 /// Global node instance (lazy-initialized on first call).
-static NODE: OnceLock<WakuA2ANode<NwakuRestTransport>> = OnceLock::new();
+static NODE: OnceLock<WakuA2ANode<NwakuTransport>> = OnceLock::new();
 
-fn get_or_init_node() -> &'static WakuA2ANode<NwakuRestTransport> {
+fn get_or_init_node() -> &'static WakuA2ANode<NwakuTransport> {
     NODE.get_or_init(|| {
-        let waku_url = std::env::var("WAKU_URL")
-            .unwrap_or_else(|_| "http://localhost:8645".to_string());
-        let transport = NwakuRestTransport::new(&waku_url);
+        let waku_url =
+            std::env::var("WAKU_URL").unwrap_or_else(|_| "http://localhost:8645".to_string());
+        let transport = NwakuTransport::new(&waku_url);
         let node = WakuA2ANode::new(
             "lmao-agent",
             "LMAO A2A agent via Logos Core",
@@ -57,7 +55,10 @@ fn to_cstring(s: String) -> *mut c_char {
 }
 
 fn error_json(msg: &str) -> *mut c_char {
-    to_cstring(format!(r#"{{"success":false,"error":"{}"}}"#, msg.replace('"', "\\\"") ))
+    to_cstring(format!(
+        r#"{{"success":false,"error":"{}"}}"#,
+        msg.replace('"', "\\\"")
+    ))
 }
 
 fn success_json(payload: serde_json::Value) -> *mut c_char {
@@ -88,9 +89,7 @@ pub extern "C" fn lmao_discover_agents(args_json: *const c_char) -> *mut c_char 
     let timeout_ms: u64 = match cstr_to_str(args_json) {
         Ok(s) => {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
-                v.get("timeout_ms")
-                    .and_then(|t| t.as_u64())
-                    .unwrap_or(5000)
+                v.get("timeout_ms").and_then(|t| t.as_u64()).unwrap_or(5000)
             } else {
                 5000
             }
@@ -187,6 +186,7 @@ pub extern "C" fn lmao_get_agent_card() -> *mut c_char {
 
 /// Free a string returned by any lmao_* function.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn lmao_free_string(s: *mut c_char) {
     if !s.is_null() {
         unsafe {
@@ -199,4 +199,149 @@ pub extern "C" fn lmao_free_string(s: *mut c_char) {
 #[no_mangle]
 pub extern "C" fn lmao_version() -> *mut c_char {
     to_cstring(env!("CARGO_PKG_VERSION").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waku_a2a_core::{A2AEnvelope, AgentCard, Message, Part, Task, TaskState};
+
+    #[test]
+    fn test_free_string_null() {
+        // Should not panic on null pointer
+        lmao_free_string(std::ptr::null_mut());
+    }
+
+    #[test]
+    fn test_free_string_valid() {
+        let s = to_cstring("hello world".to_string());
+        assert!(!s.is_null());
+        lmao_free_string(s);
+    }
+
+    #[test]
+    fn test_to_cstring_and_back() {
+        let original = "test string 123";
+        let ptr = to_cstring(original.to_string());
+        let recovered = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        assert_eq!(recovered, original);
+        lmao_free_string(ptr);
+    }
+
+    #[test]
+    fn test_error_json_format() {
+        let ptr = error_json("something went wrong");
+        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        let v: serde_json::Value = serde_json::from_str(s).unwrap();
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error"], "something went wrong");
+        lmao_free_string(ptr);
+    }
+
+    #[test]
+    fn test_error_json_escapes_quotes() {
+        let ptr = error_json(r#"bad "input""#);
+        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        let v: serde_json::Value = serde_json::from_str(s).unwrap();
+        assert_eq!(v["success"], false);
+        assert!(v["error"].as_str().unwrap().contains("bad"));
+        lmao_free_string(ptr);
+    }
+
+    #[test]
+    fn test_success_json_object() {
+        let ptr = success_json(serde_json::json!({"key": "value"}));
+        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        let v: serde_json::Value = serde_json::from_str(s).unwrap();
+        assert_eq!(v["success"], true);
+        assert_eq!(v["key"], "value");
+        lmao_free_string(ptr);
+    }
+
+    #[test]
+    fn test_success_json_non_object() {
+        let ptr = success_json(serde_json::json!(42));
+        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        let v: serde_json::Value = serde_json::from_str(s).unwrap();
+        assert_eq!(v["success"], true);
+        assert_eq!(v["data"], 42);
+        lmao_free_string(ptr);
+    }
+
+    #[test]
+    fn test_version() {
+        let ptr = lmao_version();
+        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        assert_eq!(s, env!("CARGO_PKG_VERSION"));
+        lmao_free_string(ptr);
+    }
+
+    #[test]
+    fn test_cstr_to_str_null() {
+        assert!(cstr_to_str(std::ptr::null()).is_err());
+    }
+
+    #[test]
+    fn test_cstr_to_str_valid() {
+        let c = CString::new("hello").unwrap();
+        let result = cstr_to_str(c.as_ptr());
+        assert_eq!(result.unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_runtime_init_idempotent() {
+        let rt1 = runtime();
+        let rt2 = runtime();
+        assert!(std::ptr::eq(rt1, rt2));
+    }
+
+    // ── JSON serialization tests for FFI types ──
+
+    #[test]
+    fn test_agent_card_json_roundtrip() {
+        let card = AgentCard {
+            name: "test-agent".to_string(),
+            description: "A test agent".to_string(),
+            version: "0.1.0".to_string(),
+            capabilities: vec!["text".to_string(), "code".to_string()],
+            public_key: "02abcdef1234".to_string(),
+            intro_bundle: None,
+        };
+        let json = serde_json::to_string(&card).unwrap();
+        let parsed: AgentCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(card, parsed);
+    }
+
+    #[test]
+    fn test_task_json_roundtrip() {
+        let task = Task::new("02aabb", "03ccdd", "Hello");
+        let json = serde_json::to_string(&task).unwrap();
+        let parsed: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(task.from, parsed.from);
+        assert_eq!(task.to, parsed.to);
+        assert_eq!(task.text(), parsed.text());
+        assert_eq!(task.state, TaskState::Submitted);
+    }
+
+    #[test]
+    fn test_envelope_task_json() {
+        let task = Task::new("02aa", "03bb", "test");
+        let envelope = A2AEnvelope::Task(task);
+        let json = serde_json::to_string(&envelope).unwrap();
+        let parsed: A2AEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(envelope, parsed);
+    }
+
+    #[test]
+    fn test_message_parts_json() {
+        let msg = Message {
+            role: "user".to_string(),
+            parts: vec![Part::Text {
+                text: "Hello world".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, parsed);
+    }
 }

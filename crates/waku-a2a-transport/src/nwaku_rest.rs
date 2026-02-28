@@ -4,12 +4,14 @@
 //! This is the v0.1 transport while we work on the logos-delivery-rust-bindings FFI
 //! integration (Issue #1).
 
-use crate::WakuTransport;
+use crate::Transport;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 /// Transport implementation backed by the nwaku REST API.
 ///
@@ -18,10 +20,10 @@ use std::sync::Mutex;
 /// docker run -p 8645:8645 statusteam/nim-waku:v0.31.0 \
 ///   --rest --rest-address=0.0.0.0 --rest-port=8645
 /// ```
-pub struct NwakuRestTransport {
-    pub waku_url: String,
+pub struct NwakuTransport {
+    waku_url: String,
     client: reqwest::Client,
-    subscribed_topics: Mutex<HashSet<String>>,
+    subscriptions: Mutex<HashMap<String, JoinHandle<()>>>,
 }
 
 #[derive(Serialize)]
@@ -40,19 +42,17 @@ struct WakuMessageResponse {
     content_topic: Option<String>,
 }
 
-impl NwakuRestTransport {
+impl NwakuTransport {
     pub fn new(waku_url: &str) -> Self {
         Self {
             waku_url: waku_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
-            subscribed_topics: Mutex::new(HashSet::new()),
+            subscriptions: Mutex::new(HashMap::new()),
         }
     }
 }
 
 fn base64_encode(data: &[u8]) -> String {
-    // Simple base64 encoding without external dependency
-    // nwaku REST API expects base64-encoded payloads
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::new();
     for chunk in data.chunks(3) {
@@ -82,12 +82,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     let chars: Vec<u8> = input
         .bytes()
-        .filter_map(|b| {
-            alphabet
-                .iter()
-                .position(|&a| a == b)
-                .map(|p| p as u8)
-        })
+        .filter_map(|b| alphabet.iter().position(|&a| a == b).map(|p| p as u8))
         .collect();
     for chunk in chars.chunks(4) {
         let len = chunk.len();
@@ -111,15 +106,54 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
 }
 
 /// URL-encode a content topic for nwaku REST API.
-/// nwaku uses the pubsub topic as a path component and content topic as query.
 fn encode_topic(topic: &str) -> String {
     topic.replace('/', "%2F")
 }
 
 const DEFAULT_PUBSUB_TOPIC: &str = "/waku/2/default-waku/proto";
 
+/// Poll nwaku REST API for messages on a specific content topic.
+async fn poll_rest_messages(
+    client: &reqwest::Client,
+    waku_url: &str,
+    topic: &str,
+) -> Result<Vec<Vec<u8>>> {
+    let url = format!(
+        "{}/relay/v1/messages/{}",
+        waku_url,
+        encode_topic(DEFAULT_PUBSUB_TOPIC)
+    );
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("Failed to poll nwaku")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("nwaku poll failed ({}): {}", status, body);
+    }
+
+    let messages: Vec<WakuMessageResponse> = resp.json().await.unwrap_or_default();
+
+    let mut payloads = Vec::new();
+    for msg in messages {
+        if let Some(ct) = &msg.content_topic {
+            if ct != topic {
+                continue;
+            }
+        }
+        if let Ok(decoded) = base64_decode(&msg.payload) {
+            payloads.push(decoded);
+        }
+    }
+    Ok(payloads)
+}
+
 #[async_trait]
-impl WakuTransport for NwakuRestTransport {
+impl Transport for NwakuTransport {
     async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
         let url = format!(
             "{}/relay/v1/messages/{}",
@@ -154,49 +188,49 @@ impl WakuTransport for NwakuRestTransport {
         Ok(())
     }
 
-    async fn subscribe(&self, topic: &str) -> Result<()> {
-        // nwaku auto-relay doesn't require explicit content topic subscriptions
-        // for the default pubsub topic. Track it locally for poll filtering.
-        let mut topics = self.subscribed_topics.lock().unwrap();
-        topics.insert(topic.to_string());
-        Ok(())
+    async fn subscribe(&self, topic: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
+        // Clean up existing subscription for this topic
+        if let Some(handle) = self.subscriptions.lock().unwrap().remove(topic) {
+            handle.abort();
+        }
+
+        let (tx, rx) = mpsc::channel(256);
+        let client = self.client.clone();
+        let waku_url = self.waku_url.clone();
+        let topic_owned = topic.to_string();
+
+        let handle = tokio::spawn(async move {
+            use std::collections::HashSet;
+            use std::hash::{Hash, Hasher};
+            let mut seen: HashSet<u64> = HashSet::new();
+
+            loop {
+                if let Ok(messages) = poll_rest_messages(&client, &waku_url, &topic_owned).await {
+                    for msg in messages {
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        msg.hash(&mut hasher);
+                        let h = hasher.finish();
+                        if seen.insert(h) && tx.send(msg).await.is_err() {
+                            return; // Receiver dropped
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        });
+
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .insert(topic.to_string(), handle);
+        Ok(rx)
     }
 
-    async fn poll(&self, topic: &str) -> Result<Vec<Vec<u8>>> {
-        let url = format!(
-            "{}/relay/v1/messages/{}",
-            self.waku_url,
-            encode_topic(DEFAULT_PUBSUB_TOPIC)
-        );
-
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("Failed to poll nwaku")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("nwaku poll failed ({}): {}", status, body);
+    async fn unsubscribe(&self, topic: &str) -> Result<()> {
+        if let Some(handle) = self.subscriptions.lock().unwrap().remove(topic) {
+            handle.abort();
         }
-
-        let messages: Vec<WakuMessageResponse> = resp.json().await.unwrap_or_default();
-
-        let mut payloads = Vec::new();
-        for msg in messages {
-            // Filter by content topic
-            if let Some(ct) = &msg.content_topic {
-                if ct != topic {
-                    continue;
-                }
-            }
-            if let Ok(decoded) = base64_decode(&msg.payload) {
-                payloads.push(decoded);
-            }
-        }
-        Ok(payloads)
+        Ok(())
     }
 }
 
@@ -243,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_transport_creation() {
-        let t = NwakuRestTransport::new("http://localhost:8645");
+        let t = NwakuTransport::new("http://localhost:8645");
         assert_eq!(t.waku_url, "http://localhost:8645");
     }
 }

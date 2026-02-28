@@ -8,7 +8,7 @@
 //!   cargo run --example echo_agent -- --encrypt
 
 use anyhow::Result;
-use waku_a2a::{NwakuRestTransport, WakuA2ANode};
+use waku_a2a::{NwakuTransport, WakuA2ANode};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
 
     let encrypt = args.iter().any(|a| a == "--encrypt");
 
-    let transport = NwakuRestTransport::new(&waku_url);
+    let transport = NwakuTransport::new(&waku_url);
     let node = if encrypt {
         WakuA2ANode::new_encrypted(
             "echo",

@@ -1,20 +1,23 @@
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
+use tokio::sync::mpsc;
 use waku_a2a_core::{topics, A2AEnvelope, AgentCard, Task};
 use waku_a2a_crypto::{AgentIdentity, IntroBundle};
 use waku_a2a_transport::sds::SdsTransport;
-use waku_a2a_transport::WakuTransport;
+use waku_a2a_transport::Transport;
 
 /// A2A node: announce, discover, send/receive tasks over Waku.
-pub struct WakuA2ANode<T: WakuTransport> {
+pub struct WakuA2ANode<T: Transport> {
     pub card: AgentCard,
     transport: SdsTransport<T>,
     signing_key: SigningKey,
     /// Optional X25519 identity for encrypted sessions.
     identity: Option<AgentIdentity>,
+    /// Persistent subscription to this node's task topic (lazy-initialized).
+    task_rx: tokio::sync::Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
 }
 
-impl<T: WakuTransport> WakuA2ANode<T> {
+impl<T: Transport> WakuA2ANode<T> {
     /// Create a new node with a random keypair (no encryption).
     pub fn new(name: &str, description: &str, capabilities: Vec<String>, transport: T) -> Self {
         let signing_key = SigningKey::random(&mut rand_core());
@@ -39,6 +42,7 @@ impl<T: WakuTransport> WakuA2ANode<T> {
             transport: SdsTransport::new(transport),
             signing_key,
             identity: None,
+            task_rx: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -74,6 +78,7 @@ impl<T: WakuTransport> WakuA2ANode<T> {
             transport: SdsTransport::new(transport),
             signing_key,
             identity: Some(identity),
+            task_rx: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -106,6 +111,7 @@ impl<T: WakuTransport> WakuA2ANode<T> {
             transport: SdsTransport::new(transport),
             signing_key,
             identity: None,
+            task_rx: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -137,27 +143,24 @@ impl<T: WakuTransport> WakuA2ANode<T> {
         Ok(())
     }
 
-    /// Discover agents by polling the discovery topic.
+    /// Discover agents by subscribing to the discovery topic and draining messages.
     pub async fn discover(&self) -> Result<Vec<AgentCard>> {
-        self.transport
-            .inner()
-            .subscribe(topics::DISCOVERY)
-            .await?;
-        let messages = self.transport.inner().poll(topics::DISCOVERY).await?;
+        let mut rx = self.transport.inner().subscribe(topics::DISCOVERY).await?;
+
         let mut cards = Vec::new();
-        for msg in messages {
+        while let Ok(msg) = rx.try_recv() {
             if let Ok(A2AEnvelope::AgentCard(card)) = serde_json::from_slice(&msg) {
-                // Don't include self
                 if card.public_key != self.card.public_key {
                     cards.push(card);
                 }
             }
         }
+
+        let _ = self.transport.inner().unsubscribe(topics::DISCOVERY).await;
         Ok(cards)
     }
 
     /// Send a task to another agent. Uses SDS for reliable delivery.
-    /// If both sides have encryption identities, the task is encrypted.
     pub async fn send_task(&self, task: &Task) -> Result<bool> {
         self.send_task_to(task, None).await
     }
@@ -172,11 +175,6 @@ impl<T: WakuTransport> WakuA2ANode<T> {
 
         let envelope = self.maybe_encrypt_task(task, recipient_card)?;
         let payload = serde_json::to_vec(&envelope).context("Failed to serialize envelope")?;
-
-        self.transport
-            .inner()
-            .subscribe(&topic)
-            .await?;
 
         let acked = self
             .transport
@@ -193,12 +191,27 @@ impl<T: WakuTransport> WakuA2ANode<T> {
     }
 
     /// Poll for incoming tasks addressed to this agent.
+    /// Lazily subscribes to the task topic on first call.
     /// Automatically decrypts encrypted tasks if this node has an identity.
     pub async fn poll_tasks(&self) -> Result<Vec<Task>> {
-        let topic = topics::task_topic(&self.card.public_key);
-        self.transport.inner().subscribe(&topic).await?;
-        let messages = self.transport.poll_dedup(&topic).await?;
+        let raw_messages = {
+            let mut task_rx = self.task_rx.lock().await;
+            if task_rx.is_none() {
+                let topic = topics::task_topic(&self.card.public_key);
+                *task_rx = Some(self.transport.inner().subscribe(&topic).await?);
+            }
+            let rx = task_rx.as_mut().unwrap();
+
+            let mut msgs = Vec::new();
+            while let Ok(msg) = rx.try_recv() {
+                msgs.push(msg);
+            }
+            msgs
+        };
+
+        let messages = self.transport.filter_dedup(raw_messages);
         let mut tasks = Vec::new();
+
         for msg in messages {
             if let Ok(envelope) = serde_json::from_slice::<A2AEnvelope>(&msg) {
                 match envelope {
@@ -221,9 +234,7 @@ impl<T: WakuTransport> WakuA2ANode<T> {
                                 }
                             }
                         } else {
-                            eprintln!(
-                                "[node] Received encrypted task but no identity configured"
-                            );
+                            eprintln!("[node] Received encrypted task but no identity configured");
                         }
                     }
                     _ => {}
@@ -234,8 +245,6 @@ impl<T: WakuTransport> WakuA2ANode<T> {
     }
 
     /// Respond to a task: send back a completed task with result.
-    /// If this node has an identity and the original sender included a pubkey,
-    /// the response is encrypted.
     pub async fn respond(&self, task: &Task, result_text: &str) -> Result<()> {
         self.respond_to(task, result_text, None).await
     }
@@ -316,50 +325,84 @@ fn rand_core() -> k256::elliptic_curve::rand_core::OsRng {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     struct MockTransport {
         published: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
-        poll_responses: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+        state: Arc<Mutex<MockState>>,
+    }
+
+    struct MockState {
+        subscribers: HashMap<String, Vec<mpsc::Sender<Vec<u8>>>>,
+        history: HashMap<String, Vec<Vec<u8>>>,
     }
 
     impl MockTransport {
         fn new() -> Self {
             Self {
                 published: Arc::new(Mutex::new(Vec::new())),
-                poll_responses: Arc::new(Mutex::new(Vec::new())),
+                state: Arc::new(Mutex::new(MockState {
+                    subscribers: HashMap::new(),
+                    history: HashMap::new(),
+                })),
             }
         }
 
         fn inject(&self, topic: &str, payload: Vec<u8>) {
-            let mut r = self.poll_responses.lock().unwrap();
-            r.push((topic.to_string(), payload));
+            let mut state = self.state.lock().unwrap();
+            state
+                .history
+                .entry(topic.to_string())
+                .or_default()
+                .push(payload.clone());
+            if let Some(subs) = state.subscribers.get_mut(topic) {
+                subs.retain(|tx| tx.try_send(payload.clone()).is_ok());
+            }
         }
     }
 
     #[async_trait]
-    impl WakuTransport for MockTransport {
+    impl Transport for MockTransport {
         async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
-            let mut p = self.published.lock().unwrap();
-            p.push((topic.to_string(), payload.to_vec()));
+            let data = payload.to_vec();
+            self.published
+                .lock()
+                .unwrap()
+                .push((topic.to_string(), data.clone()));
+
+            let mut state = self.state.lock().unwrap();
+            state
+                .history
+                .entry(topic.to_string())
+                .or_default()
+                .push(data.clone());
+            if let Some(subs) = state.subscribers.get_mut(topic) {
+                subs.retain(|tx| tx.try_send(data.clone()).is_ok());
+            }
             Ok(())
         }
-        async fn subscribe(&self, _topic: &str) -> Result<()> {
-            Ok(())
-        }
-        async fn poll(&self, topic: &str) -> Result<Vec<Vec<u8>>> {
-            let mut r = self.poll_responses.lock().unwrap();
-            let mut result = Vec::new();
-            let mut remaining = Vec::new();
-            for (t, p) in r.drain(..) {
-                if t == topic {
-                    result.push(p);
-                } else {
-                    remaining.push((t, p));
+
+        async fn subscribe(&self, topic: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
+            let mut state = self.state.lock().unwrap();
+            let (tx, rx) = mpsc::channel(1024);
+            if let Some(history) = state.history.get(topic) {
+                for msg in history {
+                    let _ = tx.try_send(msg.clone());
                 }
             }
-            *r = remaining;
-            Ok(result)
+            state
+                .subscribers
+                .entry(topic.to_string())
+                .or_default()
+                .push(tx);
+            Ok(rx)
+        }
+
+        async fn unsubscribe(&self, topic: &str) -> Result<()> {
+            let mut state = self.state.lock().unwrap();
+            state.subscribers.remove(topic);
+            Ok(())
         }
     }
 
@@ -369,7 +412,6 @@ mod tests {
         let node = WakuA2ANode::new("test", "test agent", vec!["text".into()], transport);
         assert_eq!(node.card.name, "test");
         assert!(!node.pubkey().is_empty());
-        // secp256k1 compressed pubkey is 33 bytes = 66 hex chars
         assert_eq!(node.pubkey().len(), 66);
         assert!(node.identity().is_none());
         assert!(node.card.intro_bundle.is_none());
@@ -378,13 +420,11 @@ mod tests {
     #[test]
     fn test_encrypted_node_creation() {
         let transport = MockTransport::new();
-        let node =
-            WakuA2ANode::new_encrypted("test", "test agent", vec!["text".into()], transport);
+        let node = WakuA2ANode::new_encrypted("test", "test agent", vec!["text".into()], transport);
         assert!(node.identity().is_some());
         assert!(node.card.intro_bundle.is_some());
         let bundle = node.card.intro_bundle.as_ref().unwrap();
         assert_eq!(bundle.version, "1.0");
-        // X25519 pubkey = 32 bytes = 64 hex chars
         assert_eq!(bundle.agent_pubkey.len(), 64);
     }
 
@@ -437,8 +477,6 @@ mod tests {
         let transport = MockTransport::new();
         let node = WakuA2ANode::new("echo", "echo agent", vec!["text".into()], transport);
 
-        // SdsTransport wraps the mock, so we can't inject after construction.
-        // This test validates the API works with an empty inbox.
         let tasks = node.poll_tasks().await.unwrap();
         assert!(tasks.is_empty());
     }

@@ -2,10 +2,13 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use waku_a2a_core::Task;
 use waku_a2a_node::WakuA2ANode;
-use waku_a2a_transport::nwaku_rest::NwakuRestTransport;
+use waku_a2a_transport::nwaku_rest::NwakuTransport;
 
 #[derive(Parser)]
-#[command(name = "waku-a2a", about = "A2A protocol over Waku decentralized transport")]
+#[command(
+    name = "waku-a2a",
+    about = "A2A protocol over Waku decentralized transport"
+)]
 struct Cli {
     /// nwaku REST API URL
     #[arg(long, default_value = "http://localhost:8645", global = true)]
@@ -71,7 +74,7 @@ enum TaskAction {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let transport = NwakuRestTransport::new(&cli.waku);
+    let transport = NwakuTransport::new(&cli.waku);
 
     match cli.command {
         Commands::Agent { action } => match action {
@@ -80,8 +83,10 @@ async fn main() -> Result<()> {
                 capabilities,
                 encrypt,
             } => {
-                let caps: Vec<String> =
-                    capabilities.split(',').map(|s| s.trim().to_string()).collect();
+                let caps: Vec<String> = capabilities
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect();
                 let node = if encrypt {
                     WakuA2ANode::new_encrypted(&name, &format!("{} agent", name), caps, transport)
                 } else {
