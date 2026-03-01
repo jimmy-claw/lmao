@@ -17,15 +17,27 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use rmcp::{
-    handler::server::tool::ToolRouter, model::*, tool, tool_handler, tool_router, transport::stdio,
+    handler::server::{tool::ToolRouter, wrapper::Parameters},
+    model::*,
+    tool, tool_handler, tool_router,
+    transport::stdio,
     ErrorData as McpError, ServerHandler, ServiceExt,
 };
 use tokio::sync::RwLock;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use serde::Deserialize;
 use waku_a2a_core::{AgentCard, Part, TaskState};
 use waku_a2a_node::WakuA2ANode;
-use waku_a2a_transport::nwaku::NwakuTransport;
+use waku_a2a_transport::nwaku_rest::NwakuTransport;
+
+#[derive(Deserialize, rmcp::schemars::JsonSchema)]
+struct SendToAgentInput {
+    /// Name of the target agent (from discover_agents)
+    agent_name: String,
+    /// The message/task to send to the agent
+    message: String,
+}
 
 #[derive(Parser)]
 #[command(name = "waku-a2a-mcp", about = "MCP bridge for Logos A2A agents")]
@@ -71,7 +83,6 @@ impl LogosA2ABridge {
     }
 
     /// Discover all agents currently advertising on the Waku network.
-    /// Returns their names, descriptions, and capabilities.
     #[tool(
         description = "Discover agents on the Logos messaging network. Returns a list of agent names, descriptions, and capabilities. Call this first to see what agents are available."
     )]
@@ -79,7 +90,7 @@ impl LogosA2ABridge {
         let node = self.node.read().await;
         let cards = node.discover().await.map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
-            message: format!("Discovery failed: {e}"),
+            message: format!("Discovery failed: {e}").into(),
             data: None,
         })?;
 
@@ -117,18 +128,15 @@ impl LogosA2ABridge {
 
     /// Send a task/message to a specific agent by name and wait for a response.
     #[tool(
-        description = "Send a message to a Logos agent by name. The agent will process it and return a response. Call discover_agents first to see available agents.",
-        params(
-            agent_name = "Name of the target agent (from discover_agents)",
-            message = "The message/task to send to the agent"
-        )
+        description = "Send a message to a Logos agent by name. The agent will process it and return a response. Call discover_agents first to see available agents."
     )]
     async fn send_to_agent(
         &self,
-        agent_name: String,
-        message: String,
+        Parameters(SendToAgentInput {
+            agent_name,
+            message,
+        }): Parameters<SendToAgentInput>,
     ) -> Result<CallToolResult, McpError> {
-        // Find the agent
         let agents = self.agents.read().await;
         let card = agents.iter().find(|c| c.name == agent_name).cloned();
         drop(agents);
@@ -137,22 +145,21 @@ impl LogosA2ABridge {
             code: ErrorCode::INVALID_PARAMS,
             message: format!(
                 "Agent '{agent_name}' not found. Call discover_agents first to refresh the list."
-            ),
+            )
+            .into(),
             data: None,
         })?;
 
-        // Send the task
         let node = self.node.read().await;
         let task = node
             .send_text(&card.public_key, &message)
             .await
             .map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
-                message: format!("Failed to send task: {e}"),
+                message: format!("Failed to send task: {e}").into(),
                 data: None,
             })?;
 
-        // Poll for response
         let deadline =
             tokio::time::Instant::now() + tokio::time::Duration::from_secs(self.timeout_secs);
         let task_id = task.id.clone();
@@ -169,7 +176,7 @@ impl LogosA2ABridge {
 
             let tasks = node.poll_tasks().await.map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
-                message: format!("Poll failed: {e}"),
+                message: format!("Poll failed: {e}").into(),
                 data: None,
             })?;
 
@@ -200,7 +207,7 @@ impl LogosA2ABridge {
                             task_id
                         ))]));
                     }
-                    _ => continue, // Still working
+                    _ => continue,
                 }
             }
         }
@@ -247,8 +254,9 @@ impl ServerHandler for LogosA2ABridge {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
         .init();
 
     let cli = Cli::parse();
@@ -261,15 +269,14 @@ async fn main() -> Result<()> {
 
     let bridge = LogosA2ABridge::new(&cli.waku_url, cli.timeout);
 
-    // Announce ourselves on the network
     {
-        let node = bridge.node.read().await;
+        let node: tokio::sync::RwLockReadGuard<WakuA2ANode<NwakuTransport>> =
+            bridge.node.read().await;
         if let Err(e) = node.announce().await {
             tracing::warn!("Failed to announce bridge on network: {e}");
         }
     }
 
-    // Serve over stdio (standard MCP transport)
     let service = bridge.serve(stdio()).await?;
     service.waiting().await?;
 
