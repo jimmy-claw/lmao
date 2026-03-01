@@ -1,3 +1,4 @@
+#![allow(clippy::missing_safety_doc)]
 //! C FFI bridge for waku-a2a — enables Logos Core Qt module integration.
 //!
 //! Exposes WakuA2ANode operations via C-compatible functions.
