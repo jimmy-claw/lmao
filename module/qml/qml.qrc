@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/messaging-a2a">
+        <file>MessagingA2AView.qml</file>
+    </qresource>
+</RCC>
