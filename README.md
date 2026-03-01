@@ -2,15 +2,15 @@
 
 > **LMAO** = **L**ogos **M**odule for **A**gent **O**rchestration
 >
-> Yes, the acronym is intentional. Building decentralized AI agent infrastructure is serious work — but it doesn't have to be humourless. LMAO implements Google's [A2A protocol](https://github.com/google/A2A) over [Waku](https://waku.org/) decentralized transport, bringing censorship-resistant, serverless agent-to-agent communication to the Logos stack.
+> Yes, the acronym is intentional. Building decentralized AI agent infrastructure is serious work — but it doesn't have to be humourless. LMAO implements Google's [A2A protocol](https://github.com/google/A2A) over [Logos Messaging](https://logos.co/messaging/) decentralized transport, bringing censorship-resistant, serverless agent-to-agent communication to the Logos stack.
 
 ## The Problem
 
 Google's A2A protocol is great. But it assumes HTTP: stable endpoints, central registries, easy censorship. That's fine for web2. For a decentralized agent network running on Logos, it's a non-starter.
 
-**LMAO** replaces HTTP with Waku — a decentralized pub/sub network — giving you full A2A semantics with:
+**LMAO** replaces HTTP with Logos Messaging — a decentralized pub/sub network — giving you full A2A semantics with:
 
-| | HTTP/SSE | LMAO (Waku) |
+| | HTTP/SSE | LMAO (Logos Messaging) |
 |---|---|---|
 | Discovery | Central registry | Content-addressed pub/sub topics |
 | Endpoints | Stable IP required | Just a pubkey |
@@ -22,7 +22,7 @@ Google's A2A protocol is great. But it assumes HTTP: stable endpoints, central r
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  Waku Relay Network                  │
+│              Logos Messaging Network                 │
 │                                                      │
 │  /lmao/1/discovery/proto     ← AgentCard broadcasts │
 │  /lmao/1/task/{pubkey}/proto ← Task inbox per agent │
@@ -64,7 +64,7 @@ cargo run -p waku-a2a-mcp -- --waku-url http://localhost:8645
 |-------|-------------|
 | `waku-a2a-crypto` | X25519 ECDH + ChaCha20-Poly1305 encryption |
 | `waku-a2a-core` | A2A types: `AgentCard`, `Task`, `Message`, `Part` |
-| `waku-a2a-transport` | `WakuTransport` trait + nwaku REST + `InMemoryTransport` (testing) + SDS reliability layer |
+| `waku-a2a-transport` | `LogosMessagingTransport` trait + nwaku REST + `InMemoryTransport` (testing) + SDS reliability layer |
 | `waku-a2a-node` | A2A node: announce, discover, send/receive tasks |
 | `waku-a2a-cli` | CLI for interacting with the network |
 | `waku-a2a-mcp` | ✅ MCP bridge — expose agents as tools for Claude, Cursor, etc. |
@@ -78,20 +78,20 @@ Future: [Logos Chat SDK](https://github.com/nicola/logos-chat-sdk) with Double R
 
 ## Testing
 
-All transport implementations are swappable via the `WakuTransport` trait.
-For unit/integration tests, use `InMemoryTransport` — no Waku network required:
+All transport implementations are swappable via the `LogosMessagingTransport` trait.
+For unit/integration tests, use `InMemoryTransport` — no Logos Messaging node required:
 
 ```rust
 use waku_a2a_transport::InMemoryTransport;
 use std::sync::Arc;
 
 let transport = Arc::new(InMemoryTransport::new());
-// Pass to WakuA2ANode — agents communicate in-process
+// Pass to LogosMessagingA2ANode — agents communicate in-process
 ```
 
 ## MCP Bridge
 
-Expose your Waku agent fleet as MCP tools usable by Claude Desktop, Cursor, or any MCP-compatible host:
+Expose your Logos Messaging agent fleet as MCP tools usable by Claude Desktop, Cursor, or any MCP-compatible host:
 
 ```json
 // Claude Desktop config (~/.config/claude/claude_desktop_config.json)
@@ -99,7 +99,7 @@ Expose your Waku agent fleet as MCP tools usable by Claude Desktop, Cursor, or a
   "mcpServers": {
     "logos-agents": {
       "command": "waku-a2a-mcp",
-      "args": ["--waku-url", "http://localhost:8645"]
+      "args": ["--node-url", "http://localhost:8645"]
     }
   }
 }
