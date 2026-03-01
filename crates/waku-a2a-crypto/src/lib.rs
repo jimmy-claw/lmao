@@ -58,6 +58,7 @@ pub struct SessionKey([u8; 32]);
 
 impl SessionKey {
     /// Encrypt plaintext, returns EncryptedPayload with random nonce.
+    #[allow(deprecated)]
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<EncryptedPayload> {
         let cipher = ChaCha20Poly1305::new_from_slice(&self.0)
             .map_err(|e| anyhow::anyhow!("cipher init: {}", e))?;
@@ -80,15 +81,14 @@ impl SessionKey {
     }
 
     /// Decrypt an EncryptedPayload, returns plaintext bytes.
+    #[allow(deprecated)]
     pub fn decrypt(&self, payload: &EncryptedPayload) -> Result<Vec<u8>> {
         let cipher = ChaCha20Poly1305::new_from_slice(&self.0)
             .map_err(|e| anyhow::anyhow!("cipher init: {}", e))?;
 
-        let nonce_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &payload.nonce,
-        )
-        .context("invalid base64 nonce")?;
+        let nonce_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &payload.nonce)
+                .context("invalid base64 nonce")?;
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = base64::Engine::decode(

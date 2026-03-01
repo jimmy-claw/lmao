@@ -4,14 +4,14 @@
 //! This implements a minimal SDS-inspired protocol:
 //!
 //! - Each message has a UUID
-//! - Sender publishes and then polls for ACK on /waku-a2a/1/ack/{message_id}/proto
+//! - Sender publishes and then waits for ACK on /waku-a2a/1/ack/{message_id}/proto
 //! - Receiver sends ACK after processing
 //! - If no ACK within timeout: retransmit up to MAX_RETRIES times
 //!
 //! TODO (Issue #2): Replace with the full SDS protocol spec.
 //! Reference: https://blog.waku.org/explanation-series-a-unified-stack-for-scalable-and-reliable-p2p-communication/
 
-use crate::WakuTransport;
+use crate::Transport;
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -19,17 +19,16 @@ use std::time::Duration;
 
 const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RETRIES: u32 = 3;
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Minimal SDS layer wrapping any WakuTransport.
-pub struct SdsTransport<T: WakuTransport> {
+/// Minimal SDS layer wrapping any Transport.
+pub struct SdsTransport<T: Transport> {
     inner: T,
     /// Bloom filter substitute: set of seen message IDs for deduplication.
     /// TODO (Issue #2): Replace with proper bloom filter from SDS spec.
     seen_ids: Mutex<HashSet<String>>,
 }
 
-impl<T: WakuTransport> SdsTransport<T> {
+impl<T: Transport> SdsTransport<T> {
     pub fn new(transport: T) -> Self {
         Self {
             inner: transport,
@@ -50,13 +49,14 @@ impl<T: WakuTransport> SdsTransport<T> {
         message_id: &str,
     ) -> Result<bool> {
         let ack_topic = format!("/waku-a2a/1/ack/{}/proto", message_id);
-        self.inner.subscribe(&ack_topic).await?;
+        let mut ack_rx = self.inner.subscribe(&ack_topic).await?;
 
         for attempt in 0..=MAX_RETRIES {
             if attempt > 0 {
-                tracing_log(
-                    &format!("SDS: retransmit attempt {}/{} for {}", attempt, MAX_RETRIES, message_id),
-                );
+                tracing_log(&format!(
+                    "SDS: retransmit attempt {}/{} for {}",
+                    attempt, MAX_RETRIES, message_id
+                ));
             }
 
             self.inner
@@ -64,12 +64,17 @@ impl<T: WakuTransport> SdsTransport<T> {
                 .await
                 .context("SDS publish failed")?;
 
-            // Poll for ACK
-            if self.wait_for_ack(&ack_topic, message_id).await? {
-                return Ok(true);
+            // Wait for ACK with timeout
+            match tokio::time::timeout(ACK_TIMEOUT, wait_for_ack(&mut ack_rx, message_id)).await {
+                Ok(true) => {
+                    let _ = self.inner.unsubscribe(&ack_topic).await;
+                    return Ok(true);
+                }
+                _ => continue,
             }
         }
 
+        let _ = self.inner.unsubscribe(&ack_topic).await;
         tracing_log(&format!(
             "SDS: no ACK after {} retries for {}",
             MAX_RETRIES, message_id
@@ -99,42 +104,35 @@ impl<T: WakuTransport> SdsTransport<T> {
         seen.insert(message_id.to_string());
     }
 
-    /// Poll the inner transport, filtering duplicates.
-    pub async fn poll_dedup(&self, topic: &str) -> Result<Vec<Vec<u8>>> {
-        let messages = self.inner.poll(topic).await?;
-        let mut result = Vec::new();
-        for msg in messages {
-            // Try to extract message_id for dedup
-            if let Ok(envelope) =
-                serde_json::from_slice::<serde_json::Value>(&msg)
-            {
-                if let Some(id) = envelope.get("id").and_then(|v| v.as_str()) {
-                    if self.is_duplicate(id) {
-                        continue;
+    /// Filter duplicate messages from a batch, using the "id" field in JSON.
+    pub fn filter_dedup(&self, messages: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        messages
+            .into_iter()
+            .filter(|msg| {
+                if let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(msg) {
+                    if let Some(id) = envelope.get("id").and_then(|v| v.as_str()) {
+                        if self.is_duplicate(id) {
+                            return false;
+                        }
+                        self.mark_seen(id);
                     }
-                    self.mark_seen(id);
                 }
-            }
-            result.push(msg);
-        }
-        Ok(result)
+                true
+            })
+            .collect()
     }
+}
 
-    async fn wait_for_ack(&self, ack_topic: &str, message_id: &str) -> Result<bool> {
-        let deadline = tokio::time::Instant::now() + ACK_TIMEOUT;
-        while tokio::time::Instant::now() < deadline {
-            let messages = self.inner.poll(ack_topic).await.unwrap_or_default();
-            for msg in messages {
-                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&msg) {
-                    if val.get("message_id").and_then(|v| v.as_str()) == Some(message_id) {
-                        return Ok(true);
-                    }
-                }
+/// Wait for an ACK message on a channel.
+async fn wait_for_ack(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>, message_id: &str) -> bool {
+    while let Some(msg) = rx.recv().await {
+        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&msg) {
+            if val.get("message_id").and_then(|v| v.as_str()) == Some(message_id) {
+                return true;
             }
-            tokio::time::sleep(POLL_INTERVAL).await;
         }
-        Ok(false)
     }
+    false
 }
 
 fn tracing_log(msg: &str) {
@@ -144,62 +142,11 @@ fn tracing_log(msg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::WakuTransport;
-    use async_trait::async_trait;
-    use std::sync::{Arc, Mutex as StdMutex};
-
-    /// In-memory transport for testing.
-    struct MockTransport {
-        published: Arc<StdMutex<Vec<(String, Vec<u8>)>>>,
-        /// Messages to return on poll, keyed by topic.
-        poll_responses: Arc<StdMutex<Vec<(String, Vec<u8>)>>>,
-    }
-
-    impl MockTransport {
-        fn new() -> Self {
-            Self {
-                published: Arc::new(StdMutex::new(Vec::new())),
-                poll_responses: Arc::new(StdMutex::new(Vec::new())),
-            }
-        }
-
-        fn inject_message(&self, topic: &str, payload: Vec<u8>) {
-            let mut responses = self.poll_responses.lock().unwrap();
-            responses.push((topic.to_string(), payload));
-        }
-    }
-
-    #[async_trait]
-    impl WakuTransport for MockTransport {
-        async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
-            let mut published = self.published.lock().unwrap();
-            published.push((topic.to_string(), payload.to_vec()));
-            Ok(())
-        }
-
-        async fn subscribe(&self, _topic: &str) -> Result<()> {
-            Ok(())
-        }
-
-        async fn poll(&self, topic: &str) -> Result<Vec<Vec<u8>>> {
-            let mut responses = self.poll_responses.lock().unwrap();
-            let mut result = Vec::new();
-            let mut remaining = Vec::new();
-            for (t, payload) in responses.drain(..) {
-                if t == topic {
-                    result.push(payload);
-                } else {
-                    remaining.push((t, payload));
-                }
-            }
-            *responses = remaining;
-            Ok(result)
-        }
-    }
+    use crate::memory::InMemoryTransport;
 
     #[test]
     fn test_deduplication() {
-        let transport = MockTransport::new();
+        let transport = InMemoryTransport::new();
         let sds = SdsTransport::new(transport);
 
         assert!(!sds.is_duplicate("msg-1"));
@@ -210,29 +157,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_ack() {
-        let transport = MockTransport::new();
-        let published = transport.published.clone();
+        let transport = InMemoryTransport::new();
+        let spy = transport.clone();
         let sds = SdsTransport::new(transport);
 
         sds.send_ack("task-123").await.unwrap();
 
-        let msgs = published.lock().unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].0, "/waku-a2a/1/ack/task-123/proto");
-        let val: serde_json::Value = serde_json::from_slice(&msgs[0].1).unwrap();
+        // Verify ACK was published to correct topic
+        let mut rx = spy
+            .subscribe("/waku-a2a/1/ack/task-123/proto")
+            .await
+            .unwrap();
+        let msg = rx.try_recv().unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&msg).unwrap();
         assert_eq!(val["message_id"], "task-123");
     }
 
     #[tokio::test]
     async fn test_publish_reliable_with_ack() {
-        let transport = MockTransport::new();
-        // Pre-inject an ACK response
+        let transport = InMemoryTransport::new();
+
+        // Pre-publish an ACK (will be replayed via history on subscribe)
         let ack_payload = serde_json::to_vec(&serde_json::json!({
             "type": "ack",
             "message_id": "msg-1",
         }))
         .unwrap();
-        transport.inject_message("/waku-a2a/1/ack/msg-1/proto", ack_payload);
+        transport
+            .publish("/waku-a2a/1/ack/msg-1/proto", &ack_payload)
+            .await
+            .unwrap();
 
         let sds = SdsTransport::new(transport);
 
@@ -243,23 +197,19 @@ mod tests {
         assert!(acked);
     }
 
-    #[tokio::test]
-    async fn test_poll_dedup() {
-        let transport = MockTransport::new();
+    #[test]
+    fn test_filter_dedup() {
+        let transport = InMemoryTransport::new();
+        let sds = SdsTransport::new(transport);
 
-        // Inject same message twice
         let msg = serde_json::to_vec(&serde_json::json!({
             "id": "task-1",
             "data": "hello"
         }))
         .unwrap();
-        transport.inject_message("topic-a", msg.clone());
-        transport.inject_message("topic-a", msg);
 
-        let sds = SdsTransport::new(transport);
-
-        let result = sds.poll_dedup("topic-a").await.unwrap();
-        // Second message should be deduped
+        // Same message twice — second should be deduped
+        let result = sds.filter_dedup(vec![msg.clone(), msg]);
         assert_eq!(result.len(), 1);
     }
 }

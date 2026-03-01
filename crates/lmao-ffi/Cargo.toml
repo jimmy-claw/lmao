@@ -1,0 +1,20 @@
+[package]
+name = "lmao-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C FFI wrapper for LMAO (A2A over Waku)"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+waku-a2a-node = { path = "../waku-a2a-node" }
+waku-a2a-core = { path = "../waku-a2a-core" }
+waku-a2a-transport = { path = "../waku-a2a-transport" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[build-dependencies]
+cbindgen = "0.27"

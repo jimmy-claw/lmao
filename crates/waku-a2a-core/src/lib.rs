@@ -61,7 +61,9 @@ pub struct Task {
 pub enum A2AEnvelope {
     AgentCard(AgentCard),
     Task(Task),
-    Ack { message_id: String },
+    Ack {
+        message_id: String,
+    },
     EncryptedTask {
         encrypted: EncryptedPayload,
         sender_pubkey: String,
@@ -102,16 +104,23 @@ impl Task {
     }
 
     pub fn text(&self) -> Option<&str> {
-        self.message.parts.iter().find_map(|p| match p {
-            Part::Text { text } => Some(text.as_str()),
-        })
+        self.message
+            .parts
+            .iter()
+            .map(|p| match p {
+                Part::Text { text } => text.as_str(),
+            })
+            .next()
     }
 
     pub fn result_text(&self) -> Option<&str> {
         self.result.as_ref().and_then(|m| {
-            m.parts.iter().find_map(|p| match p {
-                Part::Text { text } => Some(text.as_str()),
-            })
+            m.parts
+                .iter()
+                .map(|p| match p {
+                    Part::Text { text } => text.as_str(),
+                })
+                .next()
         })
     }
 }

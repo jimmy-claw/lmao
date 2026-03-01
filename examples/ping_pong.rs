@@ -1,6 +1,6 @@
 //! Ping-pong example: two agents exchanging tasks.
 //!
-//! This example creates two in-process agents using an in-memory mock transport,
+//! This example creates two in-process agents using the InMemoryTransport,
 //! demonstrating the A2A task flow without requiring a running nwaku node.
 //!
 //! Usage:
@@ -8,48 +8,7 @@
 //!   cargo run --example ping_pong -- --encrypt
 
 use anyhow::Result;
-use async_trait::async_trait;
-use std::sync::{Arc, Mutex};
-use waku_a2a::{Task, WakuA2ANode, WakuTransport};
-
-/// Simple in-memory transport for demo purposes.
-struct InMemoryTransport {
-    messages: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
-}
-
-impl InMemoryTransport {
-    fn new(store: Arc<Mutex<Vec<(String, Vec<u8>)>>>) -> Self {
-        Self { messages: store }
-    }
-}
-
-#[async_trait]
-impl WakuTransport for InMemoryTransport {
-    async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
-        let mut msgs = self.messages.lock().unwrap();
-        msgs.push((topic.to_string(), payload.to_vec()));
-        Ok(())
-    }
-
-    async fn subscribe(&self, _topic: &str) -> Result<()> {
-        Ok(())
-    }
-
-    async fn poll(&self, topic: &str) -> Result<Vec<Vec<u8>>> {
-        let mut msgs = self.messages.lock().unwrap();
-        let mut result = Vec::new();
-        let mut remaining = Vec::new();
-        for (t, p) in msgs.drain(..) {
-            if t == topic {
-                result.push(p);
-            } else {
-                remaining.push((t, p));
-            }
-        }
-        *msgs = remaining;
-        Ok(result)
-    }
-}
+use waku_a2a::{A2AEnvelope, AgentIdentity, InMemoryTransport, Task, Transport, WakuA2ANode};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -65,22 +24,19 @@ async fn main() -> Result<()> {
 async fn run_plaintext() -> Result<()> {
     println!("=== Ping-Pong Demo (plaintext) ===\n");
 
-    let store = Arc::new(Mutex::new(Vec::new()));
-
-    let ping_transport = InMemoryTransport::new(store.clone());
-    let pong_transport = InMemoryTransport::new(store.clone());
+    let transport = InMemoryTransport::new();
 
     let ping = WakuA2ANode::new(
         "ping",
         "Sends ping messages",
         vec!["text".to_string()],
-        ping_transport,
+        transport.clone(),
     );
     let pong = WakuA2ANode::new(
         "pong",
         "Responds to pings with pongs",
         vec!["text".to_string()],
-        pong_transport,
+        transport.clone(),
     );
 
     println!(
@@ -104,16 +60,15 @@ async fn run_plaintext() -> Result<()> {
     }
     println!();
 
+    // Publish task directly (bypasses SDS which would wait for ACK)
     let task = Task::new(ping.pubkey(), pong.pubkey(), "Ping!");
     println!("[ping] Sending: \"Ping!\" (task {})", &task.id[..8]);
-    let envelope = waku_a2a::A2AEnvelope::Task(task.clone());
+    let envelope = A2AEnvelope::Task(task.clone());
     let payload = serde_json::to_vec(&envelope)?;
     let topic = waku_a2a::topics::task_topic(pong.pubkey());
+    // Ensure pong is subscribed before we publish
     pong.poll_tasks().await?;
-    {
-        let mut msgs = store.lock().unwrap();
-        msgs.push((topic, payload));
-    }
+    transport.publish(&topic, &payload).await?;
 
     let tasks = pong.poll_tasks().await?;
     for t in &tasks {
@@ -138,22 +93,19 @@ async fn run_plaintext() -> Result<()> {
 async fn run_encrypted() -> Result<()> {
     println!("=== Ping-Pong Demo (encrypted: X25519+ChaCha20-Poly1305) ===\n");
 
-    let store = Arc::new(Mutex::new(Vec::new()));
-
-    let ping_transport = InMemoryTransport::new(store.clone());
-    let pong_transport = InMemoryTransport::new(store.clone());
+    let transport = InMemoryTransport::new();
 
     let ping = WakuA2ANode::new_encrypted(
         "ping",
         "Sends encrypted ping messages",
         vec!["text".to_string()],
-        ping_transport,
+        transport.clone(),
     );
     let pong = WakuA2ANode::new_encrypted(
         "pong",
         "Responds to encrypted pings",
         vec!["text".to_string()],
-        pong_transport,
+        transport.clone(),
     );
 
     let ping_bundle = ping.card.intro_bundle.as_ref().unwrap();
@@ -189,24 +141,22 @@ async fn run_encrypted() -> Result<()> {
     }
     println!();
 
-    // Ping sends encrypted task to Pong (using Pong's card for key agreement)
+    // Encrypt and publish task directly
     let task = Task::new(ping.pubkey(), pong.pubkey(), "Ping! (encrypted)");
     println!(
         "[ping] Sending encrypted: \"Ping! (encrypted)\" (task {})",
         &task.id[..8]
     );
-    // Encrypt using pong's card
     let envelope = {
-        // We need to manually encrypt here since send_task_to requires the card
         let pong_card = &pong.card;
         let identity = ping.identity().unwrap();
-        let their_pubkey = waku_a2a::AgentIdentity::parse_public_key(
+        let their_pubkey = AgentIdentity::parse_public_key(
             &pong_card.intro_bundle.as_ref().unwrap().agent_pubkey,
         )?;
         let session_key = identity.shared_key(&their_pubkey);
         let task_json = serde_json::to_vec(&task)?;
         let encrypted = session_key.encrypt(&task_json)?;
-        waku_a2a::A2AEnvelope::EncryptedTask {
+        A2AEnvelope::EncryptedTask {
             encrypted,
             sender_pubkey: identity.public_key_hex(),
         }
@@ -214,10 +164,7 @@ async fn run_encrypted() -> Result<()> {
     let payload = serde_json::to_vec(&envelope)?;
     let topic = waku_a2a::topics::task_topic(pong.pubkey());
     pong.poll_tasks().await?;
-    {
-        let mut msgs = store.lock().unwrap();
-        msgs.push((topic, payload));
-    }
+    transport.publish(&topic, &payload).await?;
 
     // Pong polls and decrypts
     let tasks = pong.poll_tasks().await?;
@@ -225,7 +172,6 @@ async fn run_encrypted() -> Result<()> {
         let text = t.text().unwrap_or("?");
         println!("[pong] Decrypted: \"{}\" (task {})", text, &t.id[..8]);
         let response = format!("Pong! (reply to: {})", text);
-        // Respond encrypted using ping's card
         pong.respond_to(t, &response, Some(&ping.card)).await?;
         println!("[pong] Replied (encrypted): \"{}\"", response);
     }
