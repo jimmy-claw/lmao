@@ -169,7 +169,10 @@ pub unsafe extern "C" fn waku_a2a_poll_tasks() -> *mut c_char {
 /// Respond to a task. task_json is the original task JSON, result_text is the response.
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
-pub unsafe extern "C" fn waku_a2a_respond(task_json: *const c_char, result_text: *const c_char) -> i32 {
+pub unsafe extern "C" fn waku_a2a_respond(
+    task_json: *const c_char,
+    result_text: *const c_char,
+) -> i32 {
     let task_str = unsafe { CStr::from_ptr(task_json) }.to_string_lossy();
     let result_text = unsafe { CStr::from_ptr(result_text) }.to_string_lossy();
 
