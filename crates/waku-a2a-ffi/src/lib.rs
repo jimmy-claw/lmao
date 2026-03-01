@@ -23,8 +23,7 @@ static RT: Lazy<Runtime> = Lazy::new(|| {
 });
 
 /// Global node instance (single-node FFI for now).
-static NODE: Lazy<Mutex<Option<WakuA2ANode<NwakuRestTransport>>>> =
-    Lazy::new(|| Mutex::new(None));
+static NODE: Lazy<Mutex<Option<WakuA2ANode<NwakuRestTransport>>>> = Lazy::new(|| Mutex::new(None));
 
 /// Helper: allocate a C string the caller must free with waku_a2a_free_string.
 fn to_c_string(s: &str) -> *mut c_char {
@@ -35,7 +34,9 @@ fn to_c_string(s: &str) -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn waku_a2a_free_string(s: *mut c_char) {
     if !s.is_null() {
-        unsafe { drop(CString::from_raw(s)); }
+        unsafe {
+            drop(CString::from_raw(s));
+        }
     }
 }
 
@@ -131,10 +132,7 @@ pub extern "C" fn waku_a2a_discover() -> *mut c_char {
 
 /// Send a text message to another agent. Returns 0 on success, -1 on error.
 #[no_mangle]
-pub extern "C" fn waku_a2a_send_text(
-    to_pubkey: *const c_char,
-    text: *const c_char,
-) -> i32 {
+pub extern "C" fn waku_a2a_send_text(to_pubkey: *const c_char, text: *const c_char) -> i32 {
     let to = unsafe { CStr::from_ptr(to_pubkey) }.to_string_lossy();
     let text = unsafe { CStr::from_ptr(text) }.to_string_lossy();
 
@@ -171,10 +169,7 @@ pub extern "C" fn waku_a2a_poll_tasks() -> *mut c_char {
 /// Respond to a task. task_json is the original task JSON, result_text is the response.
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
-pub extern "C" fn waku_a2a_respond(
-    task_json: *const c_char,
-    result_text: *const c_char,
-) -> i32 {
+pub extern "C" fn waku_a2a_respond(task_json: *const c_char, result_text: *const c_char) -> i32 {
     let task_str = unsafe { CStr::from_ptr(task_json) }.to_string_lossy();
     let result_text = unsafe { CStr::from_ptr(result_text) }.to_string_lossy();
 

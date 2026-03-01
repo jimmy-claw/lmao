@@ -17,10 +17,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use rmcp::{
-    handler::server::tool::ToolRouter,
-    model::*,
-    tool, tool_handler, tool_router,
-    transport::stdio,
+    handler::server::tool::ToolRouter, model::*, tool, tool_handler, tool_router, transport::stdio,
     ErrorData as McpError, ServerHandler, ServiceExt,
 };
 use tokio::sync::RwLock;
@@ -75,7 +72,9 @@ impl LogosA2ABridge {
 
     /// Discover all agents currently advertising on the Waku network.
     /// Returns their names, descriptions, and capabilities.
-    #[tool(description = "Discover agents on the Logos messaging network. Returns a list of agent names, descriptions, and capabilities. Call this first to see what agents are available.")]
+    #[tool(
+        description = "Discover agents on the Logos messaging network. Returns a list of agent names, descriptions, and capabilities. Call this first to see what agents are available."
+    )]
     async fn discover_agents(&self) -> Result<CallToolResult, McpError> {
         let node = self.node.read().await;
         let cards = node.discover().await.map_err(|e| McpError {
@@ -208,7 +207,9 @@ impl LogosA2ABridge {
     }
 
     /// List the currently cached agents (no network call).
-    #[tool(description = "List agents from the last discovery (cached). Use discover_agents to refresh.")]
+    #[tool(
+        description = "List agents from the last discovery (cached). Use discover_agents to refresh."
+    )]
     async fn list_cached_agents(&self) -> Result<CallToolResult, McpError> {
         let agents = self.agents.read().await;
         if agents.is_empty() {
@@ -222,7 +223,9 @@ impl LogosA2ABridge {
             .map(|c| format!("• {} — {}", c.name, c.description))
             .collect();
 
-        Ok(CallToolResult::success(vec![Content::text(names.join("\n"))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            names.join("\n"),
+        )]))
     }
 }
 
