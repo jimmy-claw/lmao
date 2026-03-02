@@ -109,9 +109,13 @@ extern "C" fn method_callback(result: c_int, message: *const c_char, user_data: 
     let tx =
         unsafe { Box::from_raw(user_data as *mut oneshot::Sender<Result<String, StorageError>>) };
 
-    let msg = unsafe { CStr::from_ptr(message) }
-        .to_string_lossy()
-        .into_owned();
+    let msg = if message.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
+    };
 
     let value = if result == 0 {
         Ok(msg)
@@ -161,9 +165,13 @@ extern "C" fn event_callback(result: c_int, message: *const c_char, user_data: *
     let tx =
         unsafe { &*(user_data as *const mpsc::UnboundedSender<Result<String, StorageError>>) };
 
-    let msg = unsafe { CStr::from_ptr(message) }
-        .to_string_lossy()
-        .into_owned();
+    let msg = if message.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
+    };
 
     let value = if result == 0 {
         Ok(msg)
