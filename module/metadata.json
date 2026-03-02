@@ -1,7 +1,27 @@
 {
-    "name": "logos-messaging-a2a",
-    "version": "0.1.0",
-    "description": "A2A agent-to-agent messaging module for Logos Core",
-    "author": "jimmy-claw",
-    "url": "https://github.com/jimmy-claw/logos-messaging-a2a"
+  "name": "logos-messaging-a2a",
+  "version": "0.1.0",
+  "description": "A2A agent-to-agent messaging module for Logos Core",
+  "author": "jimmy-claw",
+  "type": "ui",
+  "main": "messaging_a2a_ui",
+  "dependencies": [],
+  "category": "messaging",
+  "build": {
+    "type": "cmake",
+    "files": [
+      "module/src/MessagingA2AUIComponent.cpp",
+      "module/src/MessagingA2AUIComponent.h",
+      "module/src/MessagingA2ABackend.cpp",
+      "module/src/MessagingA2ABackend.h",
+      "module/qml/qml.qrc"
+    ]
+  },
+  "capabilities": [
+    "ui_components",
+    "agent_messaging",
+    "a2a_protocol"
+  ],
+  "icon": ":/icons/messaging-a2a.png",
+  "url": "https://github.com/jimmy-claw/logos-messaging-a2a"
 }
