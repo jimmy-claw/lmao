@@ -10,6 +10,7 @@ members = [
     "crates/waku-a2a-crypto",
     "crates/waku-a2a-core",
     "crates/logos-messaging-a2a-transport",
+    "crates/logos-messaging-a2a-storage",
     "crates/waku-a2a-node",
     "crates/waku-a2a-cli",
     "crates/logos-messaging-a2a-mcp",
@@ -33,6 +34,7 @@ async-trait = "0.1"
 waku-a2a-crypto = { path = "crates/waku-a2a-crypto" }
 waku-a2a-core = { path = "crates/waku-a2a-core" }
 logos-messaging-a2a-transport = { path = "crates/logos-messaging-a2a-transport" }
+logos-messaging-a2a-storage = { path = "crates/logos-messaging-a2a-storage" }
 waku-a2a-node = { path = "crates/waku-a2a-node" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
