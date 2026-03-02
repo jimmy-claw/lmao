@@ -3,6 +3,12 @@ name = "logos-messaging-a2a-transport"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Enable native libwaku FFI transport (requires Nim toolchain + libwaku).
+# Resolves Issue #18: rln 0.3.4 pinned once_cell=1.17.1 + serde=1.0.163 — fixed
+# by using a local fork (~/waku-bindings-fork) with rln removed from deps.
+native = ["waku-bindings"]
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -12,7 +18,5 @@ uuid = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 
-# TODO (Issue #18): Replace nwaku REST fallback with logos-delivery-rust-bindings FFI
-# Blocked: waku-bindings pins exact versions (once_cell=1.17.1, serde=1.0.163) via rln 0.3.4
-# that conflict with workspace deps. Needs upstream fix.
-# waku-bindings = { git = "https://github.com/logos-messaging/logos-delivery-rust-bindings" }
+# Native waku FFI bindings (Issue #18) — optional, needs libwaku + Nim
+waku-bindings = { path = "../../../waku-bindings-fork/waku-bindings", optional = true }

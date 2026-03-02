@@ -6,12 +6,15 @@ pub mod memory;
 pub mod nwaku_rest;
 pub mod sds;
 
+#[cfg(feature = "native")]
+pub mod logos_messaging;
+
 /// Swappable transport trait — real nwaku in production, in-memory mock in tests.
 ///
 /// Implementations:
 /// - `LogosMessagingTransport`: nwaku REST API (requires running nwaku node)
 /// - `InMemoryTransport`: in-process mock for testing (no external deps)
-/// - Native waku-bindings transport: TODO (Issue #18) — libwaku FFI via logos-delivery-rust-bindings
+/// - `NativeTransport`: embedded libwaku FFI via waku-bindings (feature = "native")
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
     /// Publish a payload to a content topic.
