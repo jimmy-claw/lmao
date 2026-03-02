@@ -3,14 +3,15 @@
 //! Wraps `logos_core_call_plugin_method_async` and `logos_core_register_event_listener`
 //! from the Logos Core C API into safe async Rust helpers.
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{c_char, c_int, c_void, CString};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex};
 
-/// Callback signature matching `AsyncCallback` in the Logos Core C API.
-type AsyncCallback = extern "C" fn(result: *const c_char, user_data: *mut c_void);
+/// Callback signature matching `AsyncCallback` in the Logos Core C API:
+/// `typedef void (*AsyncCallback)(int result, const char* message, void* user_data);`
+type AsyncCallback = extern "C" fn(result: c_int, message: *const c_char, user_data: *mut c_void);
 
 extern "C" {
     fn logos_core_call_plugin_method_async(
@@ -31,7 +32,7 @@ extern "C" {
 
 /// Shared state between the future and the FFI callback.
 struct CallState {
-    result: Option<String>,
+    result: Option<Result<String, String>>,
     waker: Option<Waker>,
 }
 
@@ -41,7 +42,7 @@ struct CallFuture {
 }
 
 impl Future for CallFuture {
-    type Output = String;
+    type Output = Result<String, String>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut state = self.state.lock().unwrap();
@@ -55,17 +56,18 @@ impl Future for CallFuture {
 }
 
 /// FFI trampoline: called from C when the async plugin method completes.
-extern "C" fn call_trampoline(result: *const c_char, user_data: *mut c_void) {
+extern "C" fn call_trampoline(result: c_int, message: *const c_char, user_data: *mut c_void) {
     let state = unsafe { Arc::from_raw(user_data as *const Mutex<CallState>) };
-    let result_str = if result.is_null() {
+    let msg = if message.is_null() {
         String::new()
     } else {
-        unsafe { std::ffi::CStr::from_ptr(result) }
+        unsafe { std::ffi::CStr::from_ptr(message) }
             .to_string_lossy()
             .into_owned()
     };
+    let value = if result == 1 { Ok(msg) } else { Err(msg) };
     let mut guard = state.lock().unwrap();
-    guard.result = Some(result_str);
+    guard.result = Some(value);
     if let Some(waker) = guard.waker.take() {
         waker.wake();
     }
@@ -74,7 +76,8 @@ extern "C" fn call_trampoline(result: *const c_char, user_data: *mut c_void) {
 /// Call a Logos Core plugin method asynchronously.
 ///
 /// `params` is a JSON array of `[{"name":"x","value":"y","type":"string"}, ...]`.
-pub async fn call_plugin_method(plugin: &str, method: &str, params: &str) -> String {
+/// Returns `Ok(message)` if result==1, `Err(message)` otherwise.
+pub async fn call_plugin_method(plugin: &str, method: &str, params: &str) -> Result<String, String> {
     let state = Arc::new(Mutex::new(CallState {
         result: None,
         waker: None,
@@ -105,16 +108,16 @@ pub struct EventListenerState {
 }
 
 /// FFI trampoline for event listeners: forwards each event to an mpsc channel.
-extern "C" fn event_trampoline(result: *const c_char, user_data: *mut c_void) {
+extern "C" fn event_trampoline(_result: c_int, message: *const c_char, user_data: *mut c_void) {
     let state = unsafe { &*(user_data as *const EventListenerState) };
-    let result_str = if result.is_null() {
+    let msg = if message.is_null() {
         String::new()
     } else {
-        unsafe { std::ffi::CStr::from_ptr(result) }
+        unsafe { std::ffi::CStr::from_ptr(message) }
             .to_string_lossy()
             .into_owned()
     };
-    let _ = state.sender.send(result_str);
+    let _ = state.sender.send(msg);
 }
 
 /// Register a persistent event listener on a Logos Core plugin.

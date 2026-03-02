@@ -23,10 +23,10 @@
  * ---------------------------------------------------------------------------*/
 
 /* Transport crate: logos_core.rs */
-typedef void (*transport_cb_t)(const char *result, void *user_data);
+
 
 /* Storage crate: logos_core.rs */
-typedef void (*storage_cb_t)(int result, const char *message, void *user_data);
+typedef void (*AsyncCallback)(int result, const char *message, void *user_data);
 
 /* ---------------------------------------------------------------------------
  * Global state
@@ -42,8 +42,8 @@ typedef struct {
     char event[64];
     int  is_storage;          /* 0 = transport (2-arg), 1 = storage (3-arg) */
     union {
-        transport_cb_t transport;
-        storage_cb_t   storage;
+        AsyncCallback transport;
+        AsyncCallback   storage;
     } cb;
     void *user_data;
 } EventListener;
@@ -134,7 +134,7 @@ static void fire_transport_events(const char *plugin, const char *event,
             strcmp(l->plugin, plugin) == 0 &&
             strcmp(l->event, event) == 0)
         {
-            l->cb.transport(payload_json, l->user_data);
+            l->cb.transport(1, payload_json, l->user_data);
         }
     }
 }
@@ -158,7 +158,7 @@ static void fire_storage_events(const char *plugin, const char *event,
  * ---------------------------------------------------------------------------*/
 
 static void handle_delivery(const char *method, const char *params,
-                            transport_cb_t cb, void *ud)
+                            AsyncCallback cb, void *ud)
 {
     if (strcmp(method, "createNode") == 0 ||
         strcmp(method, "start") == 0 ||
@@ -254,7 +254,7 @@ static void schedule_storage_event(const char *plugin, const char *event,
  * ---------------------------------------------------------------------------*/
 
 static void handle_storage(const char *method, const char *params,
-                           storage_cb_t cb, void *ud)
+                           AsyncCallback cb, void *ud)
 {
     if (strcmp(method, "uploadInit") == 0) {
         pthread_mutex_lock(&g_mutex);
@@ -423,10 +423,10 @@ void logos_core_register_event_listener(
 
         if (strcmp(plugin_name, "delivery_module") == 0) {
             l->is_storage = 0;
-            l->cb.transport = (transport_cb_t)callback;
+            l->cb.transport = (AsyncCallback)callback;
         } else {
             l->is_storage = 1;
-            l->cb.storage = (storage_cb_t)callback;
+            l->cb.storage = (AsyncCallback)callback;
         }
         l->user_data = user_data;
     }
@@ -444,10 +444,10 @@ void logos_core_call_plugin_method_async(
 
     if (strcmp(plugin_name, "delivery_module") == 0) {
         handle_delivery(method_name, params_json,
-                        (transport_cb_t)callback, user_data);
+                        (AsyncCallback)callback, user_data);
     } else if (strcmp(plugin_name, "storage_module") == 0) {
         handle_storage(method_name, params_json,
-                       (storage_cb_t)callback, user_data);
+                       (AsyncCallback)callback, user_data);
     } else {
         fprintf(stderr, "[stub] unknown plugin: %s\n", plugin_name);
     }

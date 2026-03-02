@@ -51,16 +51,18 @@ impl LogosCoreDeliveryTransport {
             "createNode",
             &params_json(&[("cfg", cfg)]),
         )
-        .await;
+        .await
+        .map_err(|e| anyhow::anyhow!("delivery_module createNode failed: {}", e))?;
         if result != "true" {
-            bail!("delivery_module createNode failed: {}", result);
+            bail!("delivery_module createNode returned: {}", result);
         }
 
         // start
-        let result =
-            logos_core::call_plugin_method(PLUGIN, "start", "[]").await;
+        let result = logos_core::call_plugin_method(PLUGIN, "start", "[]")
+            .await
+            .map_err(|e| anyhow::anyhow!("delivery_module start failed: {}", e))?;
         if result != "true" {
-            bail!("delivery_module start failed: {}", result);
+            bail!("delivery_module start returned: {}", result);
         }
 
         let subscriptions: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Vec<u8>>>>> =
@@ -114,35 +116,33 @@ impl Transport for LogosCoreDeliveryTransport {
             "send",
             &params_json(&[("contentTopic", topic), ("payload", &payload_b64)]),
         )
-        .await;
+        .await
+        .map_err(|e| anyhow::anyhow!("delivery_module send failed: {}", e))?;
 
-        // send() returns a QExpected<QString>; a non-error result is success
         if result.starts_with("error") || result.starts_with("Error") {
-            bail!("delivery_module send failed: {}", result);
+            bail!("delivery_module send returned error: {}", result);
         }
         Ok(())
     }
 
     async fn subscribe(&self, topic: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
-        // Tell the delivery module to subscribe to this content topic
         let result = logos_core::call_plugin_method(
             PLUGIN,
             "subscribe",
             &params_json(&[("contentTopic", topic)]),
         )
-        .await;
+        .await
+        .map_err(|e| anyhow::anyhow!("delivery_module subscribe failed: {}", e))?;
         if result != "true" {
-            bail!("delivery_module subscribe failed: {}", result);
+            bail!("delivery_module subscribe returned: {}", result);
         }
 
-        // Create a channel for this topic and register it for event fan-out
         let (tx, rx_unbounded) = mpsc::unbounded_channel();
         self.subscriptions
             .lock()
             .unwrap()
             .insert(topic.to_string(), tx);
 
-        // Bridge unbounded → bounded channel (matching Transport trait signature)
         let (btx, brx) = mpsc::channel(256);
         tokio::spawn(async move {
             let mut rx_unbounded = rx_unbounded;
@@ -157,7 +157,6 @@ impl Transport for LogosCoreDeliveryTransport {
     }
 
     async fn unsubscribe(&self, topic: &str) -> Result<()> {
-        // Remove the channel first so no more events are routed
         self.subscriptions.lock().unwrap().remove(topic);
 
         let result = logos_core::call_plugin_method(
@@ -165,9 +164,10 @@ impl Transport for LogosCoreDeliveryTransport {
             "unsubscribe",
             &params_json(&[("contentTopic", topic)]),
         )
-        .await;
+        .await
+        .map_err(|e| anyhow::anyhow!("delivery_module unsubscribe failed: {}", e))?;
         if result != "true" {
-            bail!("delivery_module unsubscribe failed: {}", result);
+            bail!("delivery_module unsubscribe returned: {}", result);
         }
         Ok(())
     }
