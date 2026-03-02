@@ -4,10 +4,20 @@ version = "0.1.0"
 edition = "2021"
 description = "Storage backend trait and Logos Storage (Codex) REST implementation"
 
+[features]
+default = ["rest"]
+rest = ["reqwest"]
+logos-core = ["base64"]
+
 [dependencies]
-reqwest = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+
+# REST backend
+reqwest = { workspace = true, optional = true }
+
+# Logos Core native backend
+base64 = { version = "0.22", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

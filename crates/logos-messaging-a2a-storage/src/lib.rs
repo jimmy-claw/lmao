@@ -1,10 +1,14 @@
 //! Storage backend abstraction for Logos Messaging A2A.
 //!
-//! Provides a [`StorageBackend`] trait for uploading/downloading binary payloads,
-//! plus [`LogosStorageRest`] — the default implementation targeting the
-//! Logos Storage (Codex) REST API.
+//! Provides a [`StorageBackend`] trait for uploading/downloading binary payloads
+//! and two concrete implementations:
 //!
-//! # Example
+//! | Backend | Feature flag | When to use |
+//! |---------|-------------|-------------|
+//! | [`LogosStorageRest`] | `rest` (default) | Standalone processes talking to a Codex REST API |
+//! | [`LogosCoreStorageBackend`] | `logos-core` | Inside a Logos Core host process (desktop client) |
+//!
+//! # Example (REST)
 //!
 //! ```no_run
 //! use logos_messaging_a2a_storage::{LogosStorageRest, StorageBackend};
@@ -22,6 +26,13 @@
 //! # Ok(())
 //! # }
 //! ```
+
+#[cfg(feature = "logos-core")]
+mod logos_core;
+#[cfg(feature = "logos-core")]
+mod logos_core_backend;
+#[cfg(feature = "logos-core")]
+pub use logos_core_backend::LogosCoreStorageBackend;
 
 use std::fmt;
 
@@ -61,11 +72,13 @@ pub trait StorageBackend: Send + Sync {
 ///
 /// - Upload: `POST {base_url}/api/storage/v1/data` with `Content-Type: application/octet-stream`
 /// - Download: `GET {base_url}/api/storage/v1/data/{cid}/network/stream`
+#[cfg(feature = "rest")]
 pub struct LogosStorageRest {
     base_url: String,
     client: reqwest::Client,
 }
 
+#[cfg(feature = "rest")]
 impl LogosStorageRest {
     /// Create a new backend targeting the given Codex base URL.
     ///
@@ -83,6 +96,7 @@ impl LogosStorageRest {
     }
 }
 
+#[cfg(feature = "rest")]
 #[async_trait::async_trait]
 impl StorageBackend for LogosStorageRest {
     async fn upload(&self, data: Vec<u8>) -> Result<String, StorageError> {
@@ -268,6 +282,7 @@ mod tests {
         assert!(api_err.to_string().contains("500"));
     }
 
+    #[cfg(feature = "rest")]
     #[test]
     fn logos_storage_rest_url_construction() {
         let backend = LogosStorageRest::new("http://localhost:8080/");
