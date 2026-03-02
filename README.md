@@ -45,6 +45,120 @@ Google's A2A protocol is great. But it assumes HTTP: stable endpoints, central r
       └───────────────────┘
 ```
 
+## Getting Started
+
+### Path 1: MCP Bridge (works today)
+
+Expose Logos Messaging A2A agents as MCP tools in Claude Desktop, Cursor, or any MCP-compatible host.
+
+**1. Build the bridge**
+
+```bash
+cargo build -p waku-a2a-mcp --release
+```
+
+**2. Start a nwaku node**
+
+```bash
+docker run -p 8645:8645 statusteam/nim-waku:v0.31.0 \
+  --rest --rest-address=0.0.0.0
+```
+
+**3. Add to your MCP config**
+
+Claude Desktop (`claude_desktop_config.json`) or Cursor (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "logos-agents": {
+      "command": "./target/release/waku-a2a-mcp",
+      "args": ["--waku-url", "http://localhost:8645"]
+    }
+  }
+}
+```
+
+**4. Available tools**
+
+| Tool | Description |
+|------|-------------|
+| `discover_agents` | Find agents advertising on the Logos Messaging network |
+| `send_to_agent` | Send a message to an agent by name and get a response |
+| `list_cached_agents` | List agents from the last discovery (no network call) |
+
+### Path 2: Logos Core IComponent (future)
+
+Once the `.lgx` plugin is ready (auto-built on `v*` tags):
+
+```bash
+# 1. Download from GitHub Releases
+wget https://github.com/jimmy-claw/lmao/releases/latest/download/lmao.lgx
+
+# 2. Install via Logos package manager
+lgpm install lmao.lgx
+
+# 3. Agent fleet panel appears in Logos App
+```
+
+### Quick Start: Two Agents Talking
+
+No nwaku needed — this runs entirely in-memory:
+
+```rust
+use anyhow::Result;
+use waku_a2a::{A2AEnvelope, InMemoryTransport, Task, Transport, WakuA2ANode};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let transport = InMemoryTransport::new();
+
+    // Create two agents on the same in-memory network
+    let alice = WakuA2ANode::new(
+        "alice", "Greeting agent", vec!["text".into()], transport.clone(),
+    );
+    let bob = WakuA2ANode::new(
+        "bob", "Echo agent", vec!["text".into()], transport.clone(),
+    );
+
+    // Broadcast agent cards on the discovery topic
+    alice.announce().await?;
+    bob.announce().await?;
+
+    // Alice discovers Bob
+    let agents = alice.discover().await?;
+    println!("Alice found {} agent(s)", agents.len());
+
+    // Alice sends a task to Bob
+    let task = Task::new(alice.pubkey(), bob.pubkey(), "Hello from Alice!");
+    let envelope = A2AEnvelope::Task(task.clone());
+    let payload = serde_json::to_vec(&envelope)?;
+    let topic = waku_a2a::topics::task_topic(bob.pubkey());
+    bob.poll_tasks().await?; // ensure Bob is subscribed
+    transport.publish(&topic, &payload).await?;
+
+    // Bob receives and responds
+    let tasks = bob.poll_tasks().await?;
+    let msg = tasks[0].text().unwrap();
+    println!("Bob received: {msg}");
+    bob.respond(&tasks[0], &format!("Echo: {msg}")).await?;
+
+    // Alice reads the response
+    let responses = alice.poll_tasks().await?;
+    println!("Alice got: {}", responses[0].result_text().unwrap());
+
+    Ok(())
+}
+```
+
+Output:
+
+```
+Alice found 1 agent(s)
+Bob received: Hello from Alice!
+Alice got: Echo: Hello from Alice!
+```
+
 ## Quick Start
 
 ```bash
