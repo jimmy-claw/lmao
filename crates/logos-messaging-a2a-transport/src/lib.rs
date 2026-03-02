@@ -14,11 +14,17 @@ pub mod logos_core_transport;
 #[cfg(feature = "logos-core")]
 pub use logos_core_transport::LogosCoreDeliveryTransport;
 
+#[cfg(feature = "native-waku")]
+mod waku_bindings_transport;
+#[cfg(feature = "native-waku")]
+pub use waku_bindings_transport::NativeWakuTransport;
+
 /// Swappable transport trait — real nwaku in production, in-memory mock in tests.
 ///
 /// Implementations:
 /// - `LogosMessagingTransport`: nwaku REST API (requires running nwaku node, `rest` feature)
 /// - `LogosCoreDeliveryTransport`: Logos Core IPC via delivery_module (`logos-core` feature)
+/// - `NativeWakuTransport`: native libwaku FFI via waku-bindings (`native-waku` feature)
 /// - `InMemoryTransport`: in-process mock for testing (no external deps)
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
