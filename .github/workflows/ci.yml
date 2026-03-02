@@ -44,6 +44,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+  e2e-smoke:
+    name: E2E Smoke Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run e2e smoke tests
+        run: cargo test --workspace -- --include-ignored e2e
+
   # Optional: end-to-end tests with nwaku Docker (manual trigger only)
   test-e2e:
     name: E2E Tests (nwaku)
