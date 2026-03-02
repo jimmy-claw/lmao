@@ -11,8 +11,8 @@ use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
-use waku_a2a_core::Task;
-use waku_a2a_node::WakuA2ANode;
+use logos_messaging_a2a_core::Task;
+use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 /// Tokio runtime shared across FFI calls.

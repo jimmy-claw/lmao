@@ -65,5 +65,5 @@ Add to your MCP server config pointing to the binary.
 ## Dependencies
 
 - [rmcp](https://crates.io/crates/rmcp) — Official Rust MCP SDK
-- waku-a2a-node — A2A protocol layer
+- logos-messaging-a2a-node — A2A protocol layer
 - nwaku — Waku network node (must be running)

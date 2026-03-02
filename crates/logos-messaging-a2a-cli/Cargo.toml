@@ -1,17 +1,17 @@
 [package]
-name = "waku-a2a-cli"
+name = "logos-messaging-a2a-cli"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "waku-a2a"
+name = "logos-messaging-a2a"
 path = "src/main.rs"
 
 [dependencies]
-waku-a2a-crypto = { path = "../waku-a2a-crypto" }
-waku-a2a-core = { path = "../waku-a2a-core" }
+logos-messaging-a2a-crypto = { path = "../logos-messaging-a2a-crypto" }
+logos-messaging-a2a-core = { path = "../logos-messaging-a2a-core" }
 logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
-waku-a2a-node = { path = "../waku-a2a-node" }
+logos-messaging-a2a-node = { path = "../logos-messaging-a2a-node" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

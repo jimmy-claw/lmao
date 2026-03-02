@@ -27,8 +27,8 @@ use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use serde::Deserialize;
-use waku_a2a_core::{AgentCard, Part, TaskState};
-use waku_a2a_node::WakuA2ANode;
+use logos_messaging_a2a_core::{AgentCard, Part, TaskState};
+use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 #[derive(Deserialize, rmcp::schemars::JsonSchema)]

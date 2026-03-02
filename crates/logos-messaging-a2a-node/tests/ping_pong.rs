@@ -1,8 +1,8 @@
 //! Integration test: two nodes communicating via InMemoryTransport.
 
 use std::time::Duration;
-use waku_a2a_core::{topics, A2AEnvelope, Task};
-use waku_a2a_node::WakuA2ANode;
+use logos_messaging_a2a_core::{topics, A2AEnvelope, Task};
+use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::memory::InMemoryTransport;
 use logos_messaging_a2a_transport::Transport;
 
@@ -158,7 +158,7 @@ async fn test_encrypted_ping_pong() {
     // Node B sends encrypted task to Node A
     let task = Task::new(node_b.pubkey(), node_a.pubkey(), "Secret message!");
     let identity = node_b.identity().unwrap();
-    let their_pubkey = waku_a2a_crypto::AgentIdentity::parse_public_key(
+    let their_pubkey = logos_messaging_a2a_crypto::AgentIdentity::parse_public_key(
         &agent_a_card.intro_bundle.as_ref().unwrap().agent_pubkey,
     )
     .unwrap();

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 use tokio::sync::mpsc;
-use waku_a2a_core::{topics, A2AEnvelope, AgentCard, Task};
-use waku_a2a_crypto::{AgentIdentity, IntroBundle};
+use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, Task};
+use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
 use logos_messaging_a2a_transport::sds::SdsTransport;
 use logos_messaging_a2a_transport::Transport;
 
@@ -305,7 +305,7 @@ impl<T: Transport> WakuA2ANode<T> {
         &self,
         identity: &AgentIdentity,
         sender_pubkey_hex: &str,
-        encrypted: &waku_a2a_crypto::EncryptedPayload,
+        encrypted: &logos_messaging_a2a_crypto::EncryptedPayload,
     ) -> Result<Task> {
         let their_pubkey = AgentIdentity::parse_public_key(sender_pubkey_hex)?;
         let session_key = identity.shared_key(&their_pubkey);
