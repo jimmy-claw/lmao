@@ -1,16 +1,16 @@
 [package]
-name = "waku-a2a-ffi"
+name = "logos-messaging-a2a-ffi"
 version = "0.1.0"
 edition = "2021"
-description = "C FFI bridge for waku-a2a — enables Logos Core Qt module integration"
+description = "C FFI bridge for logos-messaging-a2a — enables Logos Core Qt module integration"
 
 [lib]
 crate-type = ["cdylib", "staticlib"]
-name = "waku_a2a_ffi"
+name = "logos_messaging_a2a_ffi"
 
 [dependencies]
 waku-a2a-core = { path = "../waku-a2a-core" }
-waku-a2a-transport = { path = "../waku-a2a-transport" }
+logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
 waku-a2a-node = { path = "../waku-a2a-node" }
 waku-a2a-crypto = { path = "../waku-a2a-crypto" }
 tokio = { workspace = true }

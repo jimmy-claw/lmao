@@ -4,13 +4,13 @@
 //! Each agent on the network becomes a callable tool in Claude Desktop, Cursor, etc.
 //!
 //! Architecture:
-//!   MCP Host (Claude) → stdio → waku-a2a-mcp → Waku → Agent Fleet
+//!   MCP Host (Claude) → stdio → logos-messaging-a2a-mcp → Waku → Agent Fleet
 //!
 //! Usage:
-//!   waku-a2a-mcp --waku-url http://localhost:8645
+//!   logos-messaging-a2a-mcp --waku-url http://localhost:8645
 //!
 //! In Claude Desktop's config:
-//!   { "mcpServers": { "logos-agents": { "command": "waku-a2a-mcp", "args": ["--waku-url", "http://..."] } } }
+//!   { "mcpServers": { "logos-agents": { "command": "logos-messaging-a2a-mcp", "args": ["--waku-url", "http://..."] } } }
 
 use std::sync::Arc;
 
@@ -29,7 +29,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use serde::Deserialize;
 use waku_a2a_core::{AgentCard, Part, TaskState};
 use waku_a2a_node::WakuA2ANode;
-use waku_a2a_transport::nwaku_rest::NwakuTransport;
+use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 #[derive(Deserialize, rmcp::schemars::JsonSchema)]
 struct SendToAgentInput {
@@ -40,7 +40,7 @@ struct SendToAgentInput {
 }
 
 #[derive(Parser)]
-#[command(name = "waku-a2a-mcp", about = "MCP bridge for Logos A2A agents")]
+#[command(name = "logos-messaging-a2a-mcp", about = "MCP bridge for Logos A2A agents")]
 struct Cli {
     /// nwaku REST API URL
     #[arg(long, default_value = "http://localhost:8645")]
@@ -57,7 +57,7 @@ type AgentRegistry = Arc<RwLock<Vec<AgentCard>>>;
 /// The MCP server that bridges to A2A over Waku.
 #[derive(Clone)]
 struct LogosA2ABridge {
-    node: Arc<RwLock<WakuA2ANode<NwakuTransport>>>,
+    node: Arc<RwLock<WakuA2ANode<LogosMessagingTransport>>>,
     agents: AgentRegistry,
     timeout_secs: u64,
     tool_router: ToolRouter<Self>,
@@ -66,7 +66,7 @@ struct LogosA2ABridge {
 #[tool_router]
 impl LogosA2ABridge {
     fn new(waku_url: &str, timeout_secs: u64) -> Self {
-        let transport = NwakuTransport::new(waku_url);
+        let transport = LogosMessagingTransport::new(waku_url);
         let node = WakuA2ANode::new(
             "mcp-bridge",
             "MCP bridge — proxies tool calls to Logos A2A agents",
@@ -270,7 +270,7 @@ async fn main() -> Result<()> {
     let bridge = LogosA2ABridge::new(&cli.waku_url, cli.timeout);
 
     {
-        let node: tokio::sync::RwLockReadGuard<WakuA2ANode<NwakuTransport>> =
+        let node: tokio::sync::RwLockReadGuard<WakuA2ANode<LogosMessagingTransport>> =
             bridge.node.read().await;
         if let Err(e) = node.announce().await {
             tracing::warn!("Failed to announce bridge on network: {e}");

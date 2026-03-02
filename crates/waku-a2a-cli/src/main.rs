@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use waku_a2a_core::Task;
 use waku_a2a_node::WakuA2ANode;
-use waku_a2a_transport::nwaku_rest::NwakuTransport;
+use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 #[derive(Parser)]
 #[command(
@@ -74,7 +74,7 @@ enum TaskAction {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let transport = NwakuTransport::new(&cli.waku);
+    let transport = LogosMessagingTransport::new(&cli.waku);
 
     match cli.command {
         Commands::Agent { action } => match action {

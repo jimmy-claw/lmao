@@ -9,9 +9,9 @@ pub mod sds;
 /// Swappable transport trait — real nwaku in production, in-memory mock in tests.
 ///
 /// Implementations:
-/// - `NwakuTransport`: nwaku REST API (requires running nwaku node)
+/// - `LogosMessagingTransport`: nwaku REST API (requires running nwaku node)
 /// - `InMemoryTransport`: in-process mock for testing (no external deps)
-/// - `LogosDeliveryTransport`: TODO (Issue #1) — libwaku FFI via logos-delivery-rust-bindings
+/// - Native waku-bindings transport: TODO (Issue #18) — libwaku FFI via logos-delivery-rust-bindings
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
     /// Publish a payload to a content topic.

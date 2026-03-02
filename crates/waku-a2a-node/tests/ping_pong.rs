@@ -3,8 +3,8 @@
 use std::time::Duration;
 use waku_a2a_core::{topics, A2AEnvelope, Task};
 use waku_a2a_node::WakuA2ANode;
-use waku_a2a_transport::memory::InMemoryTransport;
-use waku_a2a_transport::Transport;
+use logos_messaging_a2a_transport::memory::InMemoryTransport;
+use logos_messaging_a2a_transport::Transport;
 
 #[tokio::test]
 async fn test_discover_agents() {

@@ -3,8 +3,8 @@ use k256::ecdsa::SigningKey;
 use tokio::sync::mpsc;
 use waku_a2a_core::{topics, A2AEnvelope, AgentCard, Task};
 use waku_a2a_crypto::{AgentIdentity, IntroBundle};
-use waku_a2a_transport::sds::SdsTransport;
-use waku_a2a_transport::Transport;
+use logos_messaging_a2a_transport::sds::SdsTransport;
+use logos_messaging_a2a_transport::Transport;
 
 /// A2A node: announce, discover, send/receive tasks over Waku.
 pub struct WakuA2ANode<T: Transport> {

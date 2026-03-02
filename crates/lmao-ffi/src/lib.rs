@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use tokio::runtime::Runtime;
 use waku_a2a_node::WakuA2ANode;
-use waku_a2a_transport::nwaku_rest::NwakuTransport;
+use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 /// Global tokio runtime for async operations.
 fn runtime() -> &'static Runtime {
@@ -18,13 +18,13 @@ fn runtime() -> &'static Runtime {
 }
 
 /// Global node instance (lazy-initialized on first call).
-static NODE: OnceLock<WakuA2ANode<NwakuTransport>> = OnceLock::new();
+static NODE: OnceLock<WakuA2ANode<LogosMessagingTransport>> = OnceLock::new();
 
-fn get_or_init_node() -> &'static WakuA2ANode<NwakuTransport> {
+fn get_or_init_node() -> &'static WakuA2ANode<LogosMessagingTransport> {
     NODE.get_or_init(|| {
         let waku_url =
             std::env::var("WAKU_URL").unwrap_or_else(|_| "http://localhost:8645".to_string());
-        let transport = NwakuTransport::new(&waku_url);
+        let transport = LogosMessagingTransport::new(&waku_url);
         let node = WakuA2ANode::new(
             "lmao-agent",
             "LMAO A2A agent via Logos Core",

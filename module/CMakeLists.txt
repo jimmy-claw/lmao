@@ -20,8 +20,8 @@ find_package(Qt6QuickWidgets REQUIRED)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-# ── waku-a2a-ffi (Rust FFI library) ──────────────────────────────────────────
-set(WAKU_A2A_FFI_LIB "" CACHE PATH "Directory containing libwaku_a2a_ffi.so")
+# ── logos-messaging-a2a-ffi (Rust FFI library) ──────────────────────────────────────────
+set(WAKU_A2A_FFI_LIB "" CACHE PATH "Directory containing liblogos_messaging_a2a_ffi.so")
 if("${WAKU_A2A_FFI_LIB}" STREQUAL "")
     # Default: look for it in the Rust target directory
     set(WAKU_A2A_FFI_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../target/release")
@@ -56,9 +56,9 @@ if(NOT component-interfaces_FOUND)
 endif()
 
 # ── Rust FFI imported library ─────────────────────────────────────────────────
-add_library(waku_a2a_ffi SHARED IMPORTED)
-set_target_properties(waku_a2a_ffi PROPERTIES
-    IMPORTED_LOCATION "${WAKU_A2A_FFI_LIB}/libwaku_a2a_ffi.so"
+add_library(logos_messaging_a2a_ffi SHARED IMPORTED)
+set_target_properties(logos_messaging_a2a_ffi PROPERTIES
+    IMPORTED_LOCATION "${WAKU_A2A_FFI_LIB}/liblogos_messaging_a2a_ffi.so"
 )
 
 # ── UI Plugin target (IComponent for logos-app-poc) ──────────────────────────
@@ -87,7 +87,7 @@ target_link_libraries(${UI_TARGET} PRIVATE
     Qt6::QuickWidgets
     logos_cpp_sdk
     logos_core
-    waku_a2a_ffi
+    logos_messaging_a2a_ffi
     component-interfaces
 )
 

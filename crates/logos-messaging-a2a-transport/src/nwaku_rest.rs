@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 /// docker run -p 8645:8645 statusteam/nim-waku:v0.31.0 \
 ///   --rest --rest-address=0.0.0.0 --rest-port=8645
 /// ```
-pub struct NwakuTransport {
+pub struct LogosMessagingTransport {
     waku_url: String,
     client: reqwest::Client,
     subscriptions: Mutex<HashMap<String, JoinHandle<()>>>,
@@ -42,7 +42,7 @@ struct WakuMessageResponse {
     content_topic: Option<String>,
 }
 
-impl NwakuTransport {
+impl LogosMessagingTransport {
     pub fn new(waku_url: &str) -> Self {
         Self {
             waku_url: waku_url.trim_end_matches('/').to_string(),
@@ -153,7 +153,7 @@ async fn poll_rest_messages(
 }
 
 #[async_trait]
-impl Transport for NwakuTransport {
+impl Transport for LogosMessagingTransport {
     async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
         let url = format!(
             "{}/relay/v1/messages/{}",
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_transport_creation() {
-        let t = NwakuTransport::new("http://localhost:8645");
+        let t = LogosMessagingTransport::new("http://localhost:8645");
         assert_eq!(t.waku_url, "http://localhost:8645");
     }
 }

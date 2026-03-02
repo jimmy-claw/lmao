@@ -34,15 +34,15 @@ Google's A2A protocol is great. But it assumes HTTP: stable endpoints, central r
       │ (echo)  │    │ (code) │    │(search)│
       └─────────┘    └────────┘    └────────┘
            │
-      ┌────▼──────────────┐
-      │  MCP Bridge       │  ← Claude Desktop / Cursor
-      │  waku-a2a-mcp     │     can talk to any agent
-      └───────────────────┘
+      ┌────▼──────────────────────┐
+      │  MCP Bridge               │  ← Claude Desktop / Cursor
+      │  logos-messaging-a2a-mcp  │     can talk to any agent
+      └───────────────────────────┘
            │
-      ┌────▼──────────────┐
-      │  Logos Core       │  ← Qt UI plugin
-      │  waku-a2a-ffi     │     for the Logos desktop app
-      └───────────────────┘
+      ┌────▼──────────────────────┐
+      │  Logos Core               │  ← Qt UI plugin
+      │  logos-messaging-a2a-ffi  │     for the Logos desktop app
+      └───────────────────────────┘
 ```
 
 ## Getting Started
@@ -54,7 +54,7 @@ Expose Logos Messaging A2A agents as MCP tools in Claude Desktop, Cursor, or any
 **1. Build the bridge**
 
 ```bash
-cargo build -p waku-a2a-mcp --release
+cargo build -p logos-messaging-a2a-mcp --release
 ```
 
 **2. Start a nwaku node**
@@ -72,7 +72,7 @@ Claude Desktop (`claude_desktop_config.json`) or Cursor (`.cursor/mcp.json`):
 {
   "mcpServers": {
     "logos-agents": {
-      "command": "./target/release/waku-a2a-mcp",
+      "command": "./target/release/logos-messaging-a2a-mcp",
       "args": ["--waku-url", "http://localhost:8645"]
     }
   }
@@ -169,7 +169,7 @@ cargo run --example ping_pong
 cargo run --example ping_pong -- --encrypt
 
 # MCP bridge (requires nwaku running on :8645)
-cargo run -p waku-a2a-mcp -- --waku-url http://localhost:8645
+cargo run -p logos-messaging-a2a-mcp -- --waku-url http://localhost:8645
 ```
 
 ## Crates
@@ -178,11 +178,11 @@ cargo run -p waku-a2a-mcp -- --waku-url http://localhost:8645
 |-------|-------------|
 | `waku-a2a-crypto` | X25519 ECDH + ChaCha20-Poly1305 encryption |
 | `waku-a2a-core` | A2A types: `AgentCard`, `Task`, `Message`, `Part` |
-| `waku-a2a-transport` | `LogosMessagingTransport` trait + nwaku REST + `InMemoryTransport` (testing) + SDS reliability layer |
+| `logos-messaging-a2a-transport` | `Transport` trait + nwaku REST (`LogosMessagingTransport`) + `InMemoryTransport` (testing) + SDS reliability layer |
 | `waku-a2a-node` | A2A node: announce, discover, send/receive tasks |
 | `waku-a2a-cli` | CLI for interacting with the network |
-| `waku-a2a-mcp` | ✅ MCP bridge — expose agents as tools for Claude, Cursor, etc. |
-| `waku-a2a-ffi` | C FFI bridge for Logos Core Qt module integration |
+| `logos-messaging-a2a-mcp` | MCP bridge — expose agents as tools for Claude, Cursor, etc. |
+| `logos-messaging-a2a-ffi` | C FFI bridge for Logos Core Qt module integration |
 | `lmao-ffi` | High-level C FFI wrapper (simpler API for embedders) |
 
 ## Encryption
@@ -192,15 +192,15 @@ Future: [Logos Chat SDK](https://github.com/nicola/logos-chat-sdk) with Double R
 
 ## Testing
 
-All transport implementations are swappable via the `LogosMessagingTransport` trait.
+All transport implementations are swappable via the `Transport` trait.
 For unit/integration tests, use `InMemoryTransport` — no Logos Messaging node required:
 
 ```rust
-use waku_a2a_transport::InMemoryTransport;
+use logos_messaging_a2a_transport::InMemoryTransport;
 use std::sync::Arc;
 
 let transport = Arc::new(InMemoryTransport::new());
-// Pass to LogosMessagingA2ANode — agents communicate in-process
+// Pass to WakuA2ANode — agents communicate in-process
 ```
 
 ## MCP Bridge
@@ -212,7 +212,7 @@ Expose your Logos Messaging agent fleet as MCP tools usable by Claude Desktop, C
 {
   "mcpServers": {
     "logos-agents": {
-      "command": "waku-a2a-mcp",
+      "command": "logos-messaging-a2a-mcp",
       "args": ["--node-url", "http://localhost:8645"]
     }
   }
@@ -226,7 +226,7 @@ Tools exposed:
 
 ## Logos Core Module
 
-The `waku-a2a-ffi` crate and `module/` directory provide a Logos Core Qt plugin
+The `logos-messaging-a2a-ffi` crate and `module/` directory provide a Logos Core Qt plugin
 (IComponent-based) for embedding the A2A agent fleet UI directly in the Logos desktop app.
 
 ```

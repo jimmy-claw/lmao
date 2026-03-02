@@ -9,12 +9,12 @@ resolver = "2"
 members = [
     "crates/waku-a2a-crypto",
     "crates/waku-a2a-core",
-    "crates/waku-a2a-transport",
+    "crates/logos-messaging-a2a-transport",
     "crates/waku-a2a-node",
     "crates/waku-a2a-cli",
-    "crates/waku-a2a-mcp",
+    "crates/logos-messaging-a2a-mcp",
     "crates/lmao-ffi",
-    "crates/waku-a2a-ffi",
+    "crates/logos-messaging-a2a-ffi",
 ]
 
 [workspace.dependencies]
@@ -32,7 +32,7 @@ async-trait = "0.1"
 [dependencies]
 waku-a2a-crypto = { path = "crates/waku-a2a-crypto" }
 waku-a2a-core = { path = "crates/waku-a2a-core" }
-waku-a2a-transport = { path = "crates/waku-a2a-transport" }
+logos-messaging-a2a-transport = { path = "crates/logos-messaging-a2a-transport" }
 waku-a2a-node = { path = "crates/waku-a2a-node" }
 tokio = { workspace = true }
 anyhow = { workspace = true }

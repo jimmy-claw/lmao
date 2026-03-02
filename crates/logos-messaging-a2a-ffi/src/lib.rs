@@ -1,5 +1,5 @@
 #![allow(clippy::missing_safety_doc)]
-//! C FFI bridge for waku-a2a — enables Logos Core Qt module integration.
+//! C FFI bridge for logos-messaging-a2a — enables Logos Core Qt module integration.
 //!
 //! Exposes WakuA2ANode operations via C-compatible functions.
 //! The Qt module (C++) calls these functions to manage agents and messaging.
@@ -13,7 +13,7 @@ use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
 use waku_a2a_core::Task;
 use waku_a2a_node::WakuA2ANode;
-use waku_a2a_transport::nwaku_rest::NwakuTransport;
+use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 /// Tokio runtime shared across FFI calls.
 static RT: Lazy<Runtime> = Lazy::new(|| {
@@ -24,7 +24,7 @@ static RT: Lazy<Runtime> = Lazy::new(|| {
 });
 
 /// Global node instance (single-node FFI for now).
-static NODE: Lazy<Mutex<Option<WakuA2ANode<NwakuTransport>>>> = Lazy::new(|| Mutex::new(None));
+static NODE: Lazy<Mutex<Option<WakuA2ANode<LogosMessagingTransport>>>> = Lazy::new(|| Mutex::new(None));
 
 /// Helper: allocate a C string the caller must free with waku_a2a_free_string.
 fn to_c_string(s: &str) -> *mut c_char {
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn waku_a2a_init(
     let desc = unsafe { CStr::from_ptr(description) }.to_string_lossy();
     let url = unsafe { CStr::from_ptr(nwaku_url) }.to_string_lossy();
 
-    let transport = NwakuTransport::new(&url);
+    let transport = LogosMessagingTransport::new(&url);
     let node = if encrypted {
         WakuA2ANode::new_encrypted(&name, &desc, vec!["text".into()], transport)
     } else {
