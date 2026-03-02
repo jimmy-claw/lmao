@@ -1,17 +1,17 @@
 [package]
-name = "waku-a2a-mcp"
+name = "logos-messaging-a2a-mcp"
 version = "0.1.0"
 edition = "2021"
 description = "MCP server bridge — expose Logos Messaging A2A agents as MCP tools"
 
 [[bin]]
-name = "waku-a2a-mcp"
+name = "logos-messaging-a2a-mcp"
 path = "src/main.rs"
 
 [dependencies]
 waku-a2a-core = { path = "../waku-a2a-core" }
 waku-a2a-node = { path = "../waku-a2a-node" }
-waku-a2a-transport = { path = "../waku-a2a-transport" }
+logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
 rmcp = { version = "0.17", features = ["server", "transport-io"] }
 rmcp-macros = "0.17"
 tokio = { workspace = true }

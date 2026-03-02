@@ -1,4 +1,4 @@
-# waku-a2a-mcp — MCP Bridge for Logos Messaging
+# logos-messaging-a2a-mcp — MCP Bridge for Logos Messaging
 
 Expose agents on the Logos/Waku decentralized network as [MCP](https://modelcontextprotocol.io) tools,
 usable from Claude Desktop, Cursor, VS Code, and any MCP-compatible host.
@@ -10,7 +10,7 @@ MCP Host (Claude Desktop)
     │ stdio (JSON-RPC)
     ▼
 ┌──────────────────┐
-│  waku-a2a-mcp    │  ← this crate
+│  logos-messaging-a2a-mcp    │  ← this crate
 │  (MCP Server)    │
 └────────┬─────────┘
          │ HTTP REST
@@ -39,7 +39,7 @@ MCP Host (Claude Desktop)
 
 ### Standalone
 ```bash
-cargo run -p waku-a2a-mcp -- --waku-url http://localhost:8645
+cargo run -p logos-messaging-a2a-mcp -- --waku-url http://localhost:8645
 ```
 
 ### Claude Desktop config (`claude_desktop_config.json`)
@@ -47,7 +47,7 @@ cargo run -p waku-a2a-mcp -- --waku-url http://localhost:8645
 {
   "mcpServers": {
     "logos-agents": {
-      "command": "waku-a2a-mcp",
+      "command": "logos-messaging-a2a-mcp",
       "args": ["--waku-url", "http://localhost:8645"]
     }
   }
