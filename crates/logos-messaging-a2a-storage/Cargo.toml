@@ -1,0 +1,13 @@
+[package]
+name = "logos-messaging-a2a-storage"
+version = "0.1.0"
+edition = "2021"
+description = "Storage backend trait and Logos Storage (Codex) REST implementation"
+
+[dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

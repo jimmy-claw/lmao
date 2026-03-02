@@ -53,6 +53,10 @@ pub struct Task {
     pub message: Message,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Message>,
+    /// CID of a large payload offloaded to Logos Storage (Codex).
+    /// When present, the actual data can be fetched via a `StorageBackend`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub payload_cid: Option<String>,
 }
 
 /// Wire envelope for all messages on Waku topics.
@@ -84,6 +88,7 @@ impl Task {
                 }],
             },
             result: None,
+            payload_cid: None,
         }
     }
 
@@ -100,6 +105,7 @@ impl Task {
                     text: text.to_string(),
                 }],
             }),
+            payload_cid: None,
         }
     }
 
