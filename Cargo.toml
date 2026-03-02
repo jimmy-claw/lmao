@@ -17,6 +17,10 @@ members = [
     "crates/lmao-ffi",
     "crates/logos-messaging-a2a-ffi",
 ]
+# The demo enables the `logos-core` feature which requires liblogos_core.so at
+# link time. Excluding it from the workspace prevents feature unification from
+# breaking `cargo test --workspace`. Run it via `make demo-logos-core`.
+exclude = ["demos/logos-core-e2e"]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

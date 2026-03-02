@@ -170,7 +170,72 @@ cargo run --example ping_pong -- --encrypt
 
 # MCP bridge (requires nwaku running on :8645)
 cargo run -p logos-messaging-a2a-mcp -- --waku-url http://localhost:8645
+
+# Logos Core native demo (delivery_module + storage_module IPC)
+make demo-logos-core
 ```
+
+## Logos Core Native Demo
+
+End-to-end demo exercising `LogosCoreDeliveryTransport` and `LogosCoreStorageBackend`
+through the Logos Core C IPC API — no REST APIs, no mocks of the LMAO layer.
+
+### Prerequisites
+
+- Rust toolchain
+- C compiler (`cc`)
+- **Optional:** Logos Core SDK (`liblogos_core.so`) with `delivery_module` and `storage_module` plugins
+
+### Run with stub (default)
+
+The demo auto-compiles a stub `liblogos_core.so` that simulates both plugins in-process:
+
+```bash
+make demo-logos-core
+```
+
+### Run with real Logos Core SDK
+
+```bash
+LOGOS_CORE_LIB_DIR=/path/to/sdk/lib make demo-logos-core-real
+```
+
+### Expected output
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║  LMAO — Logos Core E2E Demo                                ║
+║  Transport: LogosCoreDeliveryTransport (delivery_module)    ║
+║  Storage:   LogosCoreStorageBackend   (storage_module)      ║
+╚══════════════════════════════════════════════════════════════╝
+
+[core] Logos Core initialized (headless / local mode)
+[core] Loaded plugins: delivery_module, storage_module
+
+── Step 1: Agent A uploads payload to Logos Storage ──────────
+  Payload size: 131072 bytes
+  Uploaded → CID: zStub0000
+
+── Step 2: Agent A sends task to Agent B ─────────────────────
+  → Sent via delivery_module IPC
+
+── Step 3: Agent B receives task + downloads payload ─────────
+  Received 1 task(s)
+  Downloaded 131072 bytes from storage
+  Payload integrity verified
+  → Responded: "Processed payload (131072 bytes). All good!"
+
+── Step 4: Agent A receives response ─────────────────────────
+  Received 1 response(s)
+  Response: "Processed payload (131072 bytes). All good!"
+```
+
+### What it proves
+
+- `LogosCoreDeliveryTransport` correctly calls `delivery_module` via `logos_core_call_plugin_method_async`
+- `LogosCoreStorageBackend` correctly uploads/downloads via `storage_module` with chunked transfer
+- Both backends compile, link, and run against the Logos Core C API
+- The full A2A flow works: announce → send task with storage CID → receive → download → respond
 
 ## Crates
 
@@ -178,7 +243,8 @@ cargo run -p logos-messaging-a2a-mcp -- --waku-url http://localhost:8645
 |-------|-------------|
 | `waku-a2a-crypto` | X25519 ECDH + ChaCha20-Poly1305 encryption |
 | `waku-a2a-core` | A2A types: `AgentCard`, `Task`, `Message`, `Part` |
-| `logos-messaging-a2a-transport` | `Transport` trait + nwaku REST (`LogosMessagingTransport`) + `InMemoryTransport` (testing) + SDS reliability layer |
+| `logos-messaging-a2a-transport` | `Transport` trait + nwaku REST + `InMemoryTransport` + `LogosCoreDeliveryTransport` + SDS reliability |
+| `logos-messaging-a2a-storage` | `StorageBackend` trait + Logos Storage (Codex) REST + `LogosCoreStorageBackend` |
 | `waku-a2a-node` | A2A node: announce, discover, send/receive tasks |
 | `waku-a2a-cli` | CLI for interacting with the network |
 | `logos-messaging-a2a-mcp` | MCP bridge — expose agents as tools for Claude, Cursor, etc. |
@@ -247,6 +313,9 @@ module/
 - [x] C FFI for Logos Core integration
 - [x] Qt IComponent module scaffolding
 - [x] InMemoryTransport for testing + CI
+- [x] `LogosCoreDeliveryTransport` — native delivery_module IPC transport
+- [x] `LogosCoreStorageBackend` — native storage_module IPC backend
+- [x] Logos Core e2e demo (stub + real SDK support)
 - [ ] libwaku FFI — embedded libwaku (no separate nwaku process)
 - [ ] Full SDS protocol — bloom filters, causal ordering, batch ACK
 - [ ] Logos Chat SDK — Double Ratchet for forward secrecy
