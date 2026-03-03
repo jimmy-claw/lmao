@@ -17,12 +17,41 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Duration;
 
-const ACK_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_RETRIES: u32 = 3;
+const DEFAULT_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_MAX_RETRIES: u32 = 3;
+
+/// Configuration for the SDS reliability layer.
+#[derive(Debug, Clone)]
+pub struct SdsConfig {
+    /// How long to wait for an ACK before retransmitting.
+    pub ack_timeout: Duration,
+    /// Maximum number of retransmission attempts.
+    pub max_retries: u32,
+}
+
+impl Default for SdsConfig {
+    fn default() -> Self {
+        Self {
+            ack_timeout: DEFAULT_ACK_TIMEOUT,
+            max_retries: DEFAULT_MAX_RETRIES,
+        }
+    }
+}
+
+impl SdsConfig {
+    /// Create a fire-and-forget config (no retries, minimal timeout).
+    pub fn fire_and_forget() -> Self {
+        Self {
+            ack_timeout: Duration::from_millis(0),
+            max_retries: 0,
+        }
+    }
+}
 
 /// Minimal SDS layer wrapping any Transport.
 pub struct SdsTransport<T: Transport> {
     inner: T,
+    config: SdsConfig,
     /// Bloom filter substitute: set of seen message IDs for deduplication.
     /// TODO (Issue #2): Replace with proper bloom filter from SDS spec.
     seen_ids: Mutex<HashSet<String>>,
@@ -30,8 +59,13 @@ pub struct SdsTransport<T: Transport> {
 
 impl<T: Transport> SdsTransport<T> {
     pub fn new(transport: T) -> Self {
+        Self::with_config(transport, SdsConfig::default())
+    }
+
+    pub fn with_config(transport: T, config: SdsConfig) -> Self {
         Self {
             inner: transport,
+            config,
             seen_ids: Mutex::new(HashSet::new()),
         }
     }
@@ -51,11 +85,11 @@ impl<T: Transport> SdsTransport<T> {
         let ack_topic = format!("/waku-a2a/1/ack/{}/proto", message_id);
         let mut ack_rx = self.inner.subscribe(&ack_topic).await?;
 
-        for attempt in 0..=MAX_RETRIES {
+        for attempt in 0..=self.config.max_retries {
             if attempt > 0 {
                 tracing_log(&format!(
                     "SDS: retransmit attempt {}/{} for {}",
-                    attempt, MAX_RETRIES, message_id
+                    attempt, self.config.max_retries, message_id
                 ));
             }
 
@@ -65,7 +99,7 @@ impl<T: Transport> SdsTransport<T> {
                 .context("SDS publish failed")?;
 
             // Wait for ACK with timeout
-            match tokio::time::timeout(ACK_TIMEOUT, wait_for_ack(&mut ack_rx, message_id)).await {
+            match tokio::time::timeout(self.config.ack_timeout, wait_for_ack(&mut ack_rx, message_id)).await {
                 Ok(true) => {
                     let _ = self.inner.unsubscribe(&ack_topic).await;
                     return Ok(true);
@@ -77,7 +111,7 @@ impl<T: Transport> SdsTransport<T> {
         let _ = self.inner.unsubscribe(&ack_topic).await;
         tracing_log(&format!(
             "SDS: no ACK after {} retries for {}",
-            MAX_RETRIES, message_id
+            self.config.max_retries, message_id
         ));
         Ok(false)
     }
