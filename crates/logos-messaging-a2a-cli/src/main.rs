@@ -1,12 +1,12 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use waku_a2a_core::Task;
-use waku_a2a_node::WakuA2ANode;
+use logos_messaging_a2a_core::Task;
+use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 #[derive(Parser)]
 #[command(
-    name = "waku-a2a",
+    name = "logos-messaging-a2a",
     about = "A2A protocol over Waku decentralized transport"
 )]
 struct Cli {

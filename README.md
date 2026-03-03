@@ -176,11 +176,11 @@ cargo run -p logos-messaging-a2a-mcp -- --waku-url http://localhost:8645
 
 | Crate | Description |
 |-------|-------------|
-| `waku-a2a-crypto` | X25519 ECDH + ChaCha20-Poly1305 encryption |
-| `waku-a2a-core` | A2A types: `AgentCard`, `Task`, `Message`, `Part` |
+| `logos-messaging-a2a-crypto` | X25519 ECDH + ChaCha20-Poly1305 encryption |
+| `logos-messaging-a2a-core` | A2A types: `AgentCard`, `Task`, `Message`, `Part` |
 | `logos-messaging-a2a-transport` | `Transport` trait + nwaku REST (`LogosMessagingTransport`) + `InMemoryTransport` (testing) + SDS reliability layer |
-| `waku-a2a-node` | A2A node: announce, discover, send/receive tasks |
-| `waku-a2a-cli` | CLI for interacting with the network |
+| `logos-messaging-a2a-node` | A2A node: announce, discover, send/receive tasks |
+| `logos-messaging-a2a-cli` | CLI for interacting with the network |
 | `logos-messaging-a2a-mcp` | MCP bridge — expose agents as tools for Claude, Cursor, etc. |
 | `logos-messaging-a2a-ffi` | C FFI bridge for Logos Core Qt module integration |
 | `lmao-ffi` | High-level C FFI wrapper (simpler API for embedders) |

@@ -8,7 +8,7 @@
 //!   cargo run --example ping_pong -- --encrypt
 
 use anyhow::Result;
-use waku_a2a::{A2AEnvelope, AgentIdentity, InMemoryTransport, Task, Transport, WakuA2ANode};
+use logos_messaging_a2a::{A2AEnvelope, AgentIdentity, InMemoryTransport, Task, Transport, WakuA2ANode};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -65,7 +65,7 @@ async fn run_plaintext() -> Result<()> {
     println!("[ping] Sending: \"Ping!\" (task {})", &task.id[..8]);
     let envelope = A2AEnvelope::Task(task.clone());
     let payload = serde_json::to_vec(&envelope)?;
-    let topic = waku_a2a::topics::task_topic(pong.pubkey());
+    let topic = logos_messaging_a2a::topics::task_topic(pong.pubkey());
     // Ensure pong is subscribed before we publish
     pong.poll_tasks().await?;
     transport.publish(&topic, &payload).await?;
@@ -162,7 +162,7 @@ async fn run_encrypted() -> Result<()> {
         }
     };
     let payload = serde_json::to_vec(&envelope)?;
-    let topic = waku_a2a::topics::task_topic(pong.pubkey());
+    let topic = logos_messaging_a2a::topics::task_topic(pong.pubkey());
     pong.poll_tasks().await?;
     transport.publish(&topic, &payload).await?;
 
