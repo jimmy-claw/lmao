@@ -165,7 +165,7 @@ static void handle_delivery(const char *method, const char *params,
         strcmp(method, "subscribe") == 0 ||
         strcmp(method, "unsubscribe") == 0)
     {
-        cb("true", ud);
+        cb(1, "true", ud);
         return;
     }
 
@@ -193,12 +193,12 @@ static void handle_delivery(const char *method, const char *params,
 
         free(topic);
         free(payload);
-        cb("ok", ud);
+        cb(1, "ok", ud);
         return;
     }
 
     /* Unknown method */
-    cb("error: unknown method", ud);
+    cb(0, "error: unknown method", ud);
 }
 
 /* ---------------------------------------------------------------------------
