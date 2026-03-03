@@ -12,18 +12,18 @@ PACKAGE_NAME="logos-messaging-a2a-${VERSION}"
 
 echo "==> Packaging ${PACKAGE_NAME}.lgx"
 
-# Ensure build artifacts exist
+# Qt UI module is optional — skip with a warning if not built
+HAS_UI=true
 if [ ! -f "${BUILD_DIR}/libmessaging_a2a_ui.so" ]; then
-    echo "ERROR: libmessaging_a2a_ui.so not found. Build the module first."
-    echo "  cargo build --release -p waku-a2a-ffi"
-    echo "  cd module && mkdir -p build && cd build && cmake .. [flags] && make -j\$(nproc)"
-    exit 1
+    echo "WARN: libmessaging_a2a_ui.so not found — packaging without Qt UI module."
+    echo "      To include it, build with: cd module && mkdir -p build && cd build && cmake .. [flags] && make -j\$(nproc)"
+    HAS_UI=false
 fi
 
-FFI_LIB="${ROOT}/target/release/libwaku_a2a_ffi.so"
+FFI_LIB="${ROOT}/target/release/liblmao_ffi.so"
 if [ ! -f "$FFI_LIB" ]; then
-    echo "ERROR: libwaku_a2a_ffi.so not found in target/release/. Build with:"
-    echo "  cargo build --release -p waku-a2a-ffi"
+    echo "ERROR: liblmao_ffi.so not found in target/release/. Build with:"
+    echo "  cargo build --release -p lmao-ffi"
     exit 1
 fi
 
@@ -35,7 +35,9 @@ mkdir -p "${STAGING}/${PACKAGE_NAME}/lib"
 mkdir -p "${STAGING}/${PACKAGE_NAME}/qml"
 mkdir -p "${STAGING}/${PACKAGE_NAME}/icons"
 
-cp "${BUILD_DIR}/libmessaging_a2a_ui.so" "${STAGING}/${PACKAGE_NAME}/lib/"
+if [ "$HAS_UI" = true ]; then
+    cp "${BUILD_DIR}/libmessaging_a2a_ui.so" "${STAGING}/${PACKAGE_NAME}/lib/"
+fi
 cp "$FFI_LIB"                            "${STAGING}/${PACKAGE_NAME}/lib/"
 cp "${ROOT}/module/metadata.json"         "${STAGING}/${PACKAGE_NAME}/"
 cp "${ROOT}/module/qml/"*.qml            "${STAGING}/${PACKAGE_NAME}/qml/" 2>/dev/null || true

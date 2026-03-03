@@ -38,14 +38,14 @@ jobs:
       - name: Fallback to script packaging
         if: steps.nix-pkg.outcome != 'success'
         run: |
-          cargo build --release -p waku-a2a-ffi
+          cargo build --release -p lmao-ffi
           bash scripts/package-lgx.sh
 
       - name: Upload LGX artifact
         uses: actions/upload-artifact@v4
         with:
           name: lgx-package
-          path: dist/lmao-*.lgx
+          path: dist/logos-messaging-a2a-*.lgx
           if-no-files-found: warn
 
   release:
@@ -66,4 +66,4 @@ jobs:
         with:
           name: "LMAO ${{ github.ref_name }}"
           body: "Logos Messaging Agent Orchestration — IComponent module package"
-          files: dist/lmao-*.lgx
+          files: dist/logos-messaging-a2a-*.lgx

@@ -44,6 +44,25 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+  package-lgx:
+    name: Package LGX
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Build FFI library
+        run: cargo build --release -p lmao-ffi
+      - name: Package LGX
+        run: bash scripts/package-lgx.sh
+      - name: Upload LGX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lgx-package
+          path: dist/logos-messaging-a2a-*.lgx
+
   e2e-smoke:
     name: E2E Smoke Tests
     runs-on: ubuntu-latest
