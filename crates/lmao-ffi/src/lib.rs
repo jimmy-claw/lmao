@@ -7,9 +7,9 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::sync::OnceLock;
 
-use tokio::runtime::Runtime;
 use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
+use tokio::runtime::Runtime;
 
 /// Global tokio runtime for async operations.
 fn runtime() -> &'static Runtime {

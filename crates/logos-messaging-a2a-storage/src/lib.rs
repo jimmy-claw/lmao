@@ -267,7 +267,10 @@ mod tests {
         let backend = MockStorage::new();
         let exact_data = vec![0u8; 1024];
         let result = maybe_offload(&backend, &exact_data, 1024).await.unwrap();
-        assert!(result.is_none(), "data at exactly the threshold should not be offloaded");
+        assert!(
+            result.is_none(),
+            "data at exactly the threshold should not be offloaded"
+        );
     }
 
     #[test]

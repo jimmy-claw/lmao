@@ -26,10 +26,10 @@ use rmcp::{
 use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use serde::Deserialize;
 use logos_messaging_a2a_core::{AgentCard, Part, TaskState};
 use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
+use serde::Deserialize;
 
 #[derive(Deserialize, rmcp::schemars::JsonSchema)]
 struct SendToAgentInput {
@@ -40,7 +40,10 @@ struct SendToAgentInput {
 }
 
 #[derive(Parser)]
-#[command(name = "logos-messaging-a2a-mcp", about = "MCP bridge for Logos A2A agents")]
+#[command(
+    name = "logos-messaging-a2a-mcp",
+    about = "MCP bridge for Logos A2A agents"
+)]
 struct Cli {
     /// nwaku REST API URL
     #[arg(long, default_value = "http://localhost:8645")]

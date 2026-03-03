@@ -13,8 +13,18 @@ fn make_arc_pair() -> (
     Arc<WakuA2ANode<InMemoryTransport>>,
 ) {
     let transport = InMemoryTransport::new();
-    let alice = Arc::new(WakuA2ANode::new("alice", "Alice agent", vec!["text".into()], transport.clone()));
-    let bob = Arc::new(WakuA2ANode::new("bob", "Bob agent", vec!["text".into()], transport));
+    let alice = Arc::new(WakuA2ANode::new(
+        "alice",
+        "Alice agent",
+        vec!["text".into()],
+        transport.clone(),
+    ));
+    let bob = Arc::new(WakuA2ANode::new(
+        "bob",
+        "Bob agent",
+        vec!["text".into()],
+        transport,
+    ));
     (alice, bob)
 }
 
@@ -29,9 +39,8 @@ async fn test_send_and_receive_task() {
     // Alice sends task to Bob; Bob polls concurrently to ACK
     let bob_pubkey = bob.pubkey().to_string();
     let alice_clone = alice.clone();
-    let send_handle = tokio::spawn(async move {
-        alice_clone.send_text(&bob_pubkey, "ping").await.unwrap()
-    });
+    let send_handle =
+        tokio::spawn(async move { alice_clone.send_text(&bob_pubkey, "ping").await.unwrap() });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     let tasks = bob.poll_tasks().await.unwrap();
@@ -56,7 +65,10 @@ async fn test_full_request_response_cycle() {
     let bob_pubkey = bob.pubkey().to_string();
     let alice_clone = alice.clone();
     let send_handle = tokio::spawn(async move {
-        alice_clone.send_text(&bob_pubkey, "What is 2+2?").await.unwrap()
+        alice_clone
+            .send_text(&bob_pubkey, "What is 2+2?")
+            .await
+            .unwrap()
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -88,7 +100,10 @@ async fn test_multiple_tasks() {
 
     let send_handle = tokio::spawn(async move {
         for i in 0..3 {
-            alice_clone.send_text(&bob_pubkey, &format!("task-{}", i)).await.unwrap();
+            alice_clone
+                .send_text(&bob_pubkey, &format!("task-{}", i))
+                .await
+                .unwrap();
         }
     });
 
@@ -114,7 +129,12 @@ async fn test_multiple_tasks() {
 #[tokio::test]
 async fn test_discover_agents() {
     let transport = InMemoryTransport::new();
-    let alice = WakuA2ANode::new("alice", "Alice agent", vec!["text".into()], transport.clone());
+    let alice = WakuA2ANode::new(
+        "alice",
+        "Alice agent",
+        vec!["text".into()],
+        transport.clone(),
+    );
     let bob = WakuA2ANode::new("bob", "Bob agent", vec!["code".into()], transport);
 
     alice.announce().await.unwrap();
@@ -130,8 +150,18 @@ async fn test_discover_agents() {
 #[tokio::test]
 async fn test_encrypted_task_roundtrip() {
     let transport = InMemoryTransport::new();
-    let alice = Arc::new(WakuA2ANode::new_encrypted("alice", "Alice", vec!["text".into()], transport.clone()));
-    let bob = Arc::new(WakuA2ANode::new_encrypted("bob", "Bob", vec!["text".into()], transport));
+    let alice = Arc::new(WakuA2ANode::new_encrypted(
+        "alice",
+        "Alice",
+        vec!["text".into()],
+        transport.clone(),
+    ));
+    let bob = Arc::new(WakuA2ANode::new_encrypted(
+        "bob",
+        "Bob",
+        vec!["text".into()],
+        transport,
+    ));
 
     // Both subscribe
     alice.poll_tasks().await.unwrap();
@@ -144,7 +174,10 @@ async fn test_encrypted_task_roundtrip() {
     let task_clone = task.clone();
 
     let send_handle = tokio::spawn(async move {
-        alice_clone.send_task_to(&task_clone, Some(&bob_card)).await.unwrap();
+        alice_clone
+            .send_task_to(&task_clone, Some(&bob_card))
+            .await
+            .unwrap();
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -160,7 +193,10 @@ async fn test_encrypted_task_roundtrip() {
     let task_ref = tasks[0].clone();
 
     let respond_handle = tokio::spawn(async move {
-        bob_clone.respond_to(&task_ref, "acknowledged", Some(&alice_card)).await.unwrap();
+        bob_clone
+            .respond_to(&task_ref, "acknowledged", Some(&alice_card))
+            .await
+            .unwrap();
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -175,8 +211,18 @@ async fn test_encrypted_task_roundtrip() {
 #[tokio::test]
 async fn test_unencrypted_node_receives_plaintext_only() {
     let transport = InMemoryTransport::new();
-    let alice = Arc::new(WakuA2ANode::new_encrypted("alice", "Alice", vec![], transport.clone()));
-    let bob = Arc::new(WakuA2ANode::new("bob", "Bob (no encryption)", vec![], transport));
+    let alice = Arc::new(WakuA2ANode::new_encrypted(
+        "alice",
+        "Alice",
+        vec![],
+        transport.clone(),
+    ));
+    let bob = Arc::new(WakuA2ANode::new(
+        "bob",
+        "Bob (no encryption)",
+        vec![],
+        transport,
+    ));
 
     bob.poll_tasks().await.unwrap();
 
@@ -186,7 +232,10 @@ async fn test_unencrypted_node_receives_plaintext_only() {
     let bob_clone = bob.clone();
 
     let send_handle = tokio::spawn(async move {
-        alice_clone.send_text(&bob_pubkey, "plain hello").await.unwrap()
+        alice_clone
+            .send_text(&bob_pubkey, "plain hello")
+            .await
+            .unwrap()
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;

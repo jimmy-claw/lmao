@@ -6,8 +6,8 @@
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 /// Callback signature matching `AsyncCallback` in the Logos Core C API:
 /// `typedef void (*AsyncCallback)(int result, const char* message, void* user_data);`
@@ -77,7 +77,11 @@ extern "C" fn call_trampoline(result: c_int, message: *const c_char, user_data: 
 ///
 /// `params` is a JSON array of `[{"name":"x","value":"y","type":"string"}, ...]`.
 /// Returns `Ok(message)` if result==1, `Err(message)` otherwise.
-pub async fn call_plugin_method(plugin: &str, method: &str, params: &str) -> Result<String, String> {
+pub async fn call_plugin_method(
+    plugin: &str,
+    method: &str,
+    params: &str,
+) -> Result<String, String> {
     let state = Arc::new(Mutex::new(CallState {
         result: None,
         waker: None,
