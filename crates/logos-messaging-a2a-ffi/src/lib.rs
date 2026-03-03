@@ -9,11 +9,11 @@ use std::os::raw::c_char;
 use std::ptr;
 use std::sync::Mutex;
 
-use once_cell::sync::Lazy;
-use tokio::runtime::Runtime;
 use logos_messaging_a2a_core::Task;
 use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
+use once_cell::sync::Lazy;
+use tokio::runtime::Runtime;
 
 /// Tokio runtime shared across FFI calls.
 static RT: Lazy<Runtime> = Lazy::new(|| {
@@ -24,7 +24,8 @@ static RT: Lazy<Runtime> = Lazy::new(|| {
 });
 
 /// Global node instance (single-node FFI for now).
-static NODE: Lazy<Mutex<Option<WakuA2ANode<LogosMessagingTransport>>>> = Lazy::new(|| Mutex::new(None));
+static NODE: Lazy<Mutex<Option<WakuA2ANode<LogosMessagingTransport>>>> =
+    Lazy::new(|| Mutex::new(None));
 
 /// Helper: allocate a C string the caller must free with waku_a2a_free_string.
 fn to_c_string(s: &str) -> *mut c_char {

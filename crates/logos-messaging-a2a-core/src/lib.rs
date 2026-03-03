@@ -1,6 +1,6 @@
+use logos_messaging_a2a_crypto::{EncryptedPayload, IntroBundle};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use logos_messaging_a2a_crypto::{EncryptedPayload, IntroBundle};
 
 /// Agent identity and capability advertisement.
 /// Equivalent to A2A's AgentCard — broadcast on the discovery topic.

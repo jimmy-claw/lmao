@@ -162,8 +162,7 @@ fn register_event_listener(
 /// lifetime of the listener registration.
 extern "C" fn event_callback(result: c_int, message: *const c_char, user_data: *mut c_void) {
     // SAFETY: `user_data` points to a leaked `Box<UnboundedSender<…>>`.
-    let tx =
-        unsafe { &*(user_data as *const mpsc::UnboundedSender<Result<String, StorageError>>) };
+    let tx = unsafe { &*(user_data as *const mpsc::UnboundedSender<Result<String, StorageError>>) };
 
     let msg = if message.is_null() {
         String::new()
@@ -235,10 +234,7 @@ impl crate::StorageBackend for LogosCoreStorageBackend {
         let mut done_rx = register_event_listener("storageDownloadDone");
 
         // 2. Start the download.
-        let dl_params = params_json(&[
-            ("cid", cid, "string"),
-            ("local", "false", "bool"),
-        ]);
+        let dl_params = params_json(&[("cid", cid, "string"), ("local", "false", "bool")]);
         call_method("downloadChunks", &dl_params).await?;
 
         // 3. Collect chunks until the "done" event fires.
