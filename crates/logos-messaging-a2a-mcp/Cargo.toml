@@ -9,8 +9,8 @@ name = "logos-messaging-a2a-mcp"
 path = "src/main.rs"
 
 [dependencies]
-waku-a2a-core = { path = "../waku-a2a-core" }
-waku-a2a-node = { path = "../waku-a2a-node" }
+logos-messaging-a2a-core = { path = "../logos-messaging-a2a-core" }
+logos-messaging-a2a-node = { path = "../logos-messaging-a2a-node" }
 logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
 rmcp = { version = "0.17", features = ["server", "transport-io"] }
 rmcp-macros = "0.17"

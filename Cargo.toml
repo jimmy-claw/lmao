@@ -1,5 +1,5 @@
 [package]
-name = "waku-a2a"
+name = "logos-messaging-a2a"
 version = "0.1.0"
 edition = "2021"
 description = "A2A protocol over Waku decentralized transport"
@@ -7,12 +7,12 @@ description = "A2A protocol over Waku decentralized transport"
 [workspace]
 resolver = "2"
 members = [
-    "crates/waku-a2a-crypto",
-    "crates/waku-a2a-core",
+    "crates/logos-messaging-a2a-crypto",
+    "crates/logos-messaging-a2a-core",
     "crates/logos-messaging-a2a-transport",
     "crates/logos-messaging-a2a-storage",
-    "crates/waku-a2a-node",
-    "crates/waku-a2a-cli",
+    "crates/logos-messaging-a2a-node",
+    "crates/logos-messaging-a2a-cli",
     "crates/logos-messaging-a2a-mcp",
     "crates/lmao-ffi",
     "crates/logos-messaging-a2a-ffi",
@@ -35,11 +35,11 @@ anyhow = "1"
 async-trait = "0.1"
 
 [dependencies]
-waku-a2a-crypto = { path = "crates/waku-a2a-crypto" }
-waku-a2a-core = { path = "crates/waku-a2a-core" }
+logos-messaging-a2a-crypto = { path = "crates/logos-messaging-a2a-crypto" }
+logos-messaging-a2a-core = { path = "crates/logos-messaging-a2a-core" }
 logos-messaging-a2a-transport = { path = "crates/logos-messaging-a2a-transport" }
 logos-messaging-a2a-storage = { path = "crates/logos-messaging-a2a-storage" }
-waku-a2a-node = { path = "crates/waku-a2a-node" }
+logos-messaging-a2a-node = { path = "crates/logos-messaging-a2a-node" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

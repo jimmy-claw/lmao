@@ -8,7 +8,7 @@ use std::os::raw::c_char;
 use std::sync::OnceLock;
 
 use tokio::runtime::Runtime;
-use waku_a2a_node::WakuA2ANode;
+use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 /// Global tokio runtime for async operations.
@@ -204,7 +204,7 @@ pub extern "C" fn lmao_version() -> *mut c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waku_a2a_core::{A2AEnvelope, AgentCard, Message, Part, Task, TaskState};
+    use logos_messaging_a2a_core::{A2AEnvelope, AgentCard, Message, Part, Task, TaskState};
 
     #[test]
     fn test_free_string_null() {
