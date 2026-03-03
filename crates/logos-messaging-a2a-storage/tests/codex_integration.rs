@@ -70,7 +70,10 @@ async fn upload_large_payload() {
 
     // 1 MB payload
     let data = vec![42u8; 1024 * 1024];
-    let cid = backend.upload(data.clone()).await.expect("large upload failed");
+    let cid = backend
+        .upload(data.clone())
+        .await
+        .expect("large upload failed");
     println!("Large upload CID: {}", cid);
 
     let downloaded = backend.download(&cid).await.expect("large download failed");
@@ -95,9 +98,18 @@ async fn download_nonexistent_cid() {
 async fn multiple_uploads_unique_cids() {
     let backend = require_codex().await;
 
-    let cid1 = backend.upload(b"payload one".to_vec()).await.expect("upload 1");
-    let cid2 = backend.upload(b"payload two".to_vec()).await.expect("upload 2");
-    let cid3 = backend.upload(b"payload one".to_vec()).await.expect("upload 3 (dup)");
+    let cid1 = backend
+        .upload(b"payload one".to_vec())
+        .await
+        .expect("upload 1");
+    let cid2 = backend
+        .upload(b"payload two".to_vec())
+        .await
+        .expect("upload 2");
+    let cid3 = backend
+        .upload(b"payload one".to_vec())
+        .await
+        .expect("upload 3 (dup)");
 
     assert_ne!(cid1, cid2, "different data should produce different CIDs");
     // Content-addressed: same data → same CID

@@ -46,13 +46,10 @@ impl LogosCoreDeliveryTransport {
     /// registers a global `messageReceived` event listener that fans out to per-topic channels.
     pub async fn new(cfg: &str) -> Result<Self> {
         // createNode
-        let result = logos_core::call_plugin_method(
-            PLUGIN,
-            "createNode",
-            &params_json(&[("cfg", cfg)]),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("delivery_module createNode failed: {}", e))?;
+        let result =
+            logos_core::call_plugin_method(PLUGIN, "createNode", &params_json(&[("cfg", cfg)]))
+                .await
+                .map_err(|e| anyhow::anyhow!("delivery_module createNode failed: {}", e))?;
         if result != "true" {
             bail!("delivery_module createNode returned: {}", result);
         }
@@ -85,12 +82,11 @@ impl LogosCoreDeliveryTransport {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default();
 
-                    let payload = match base64::engine::general_purpose::STANDARD
-                        .decode(payload_b64)
-                    {
-                        Ok(p) => p,
-                        Err(_) => continue,
-                    };
+                    let payload =
+                        match base64::engine::general_purpose::STANDARD.decode(payload_b64) {
+                            Ok(p) => p,
+                            Err(_) => continue,
+                        };
 
                     let guard = subs.lock().unwrap();
                     if let Some(tx) = guard.get(topic) {

@@ -8,7 +8,9 @@
 //!   cargo run --example ping_pong -- --encrypt
 
 use anyhow::Result;
-use logos_messaging_a2a::{A2AEnvelope, AgentIdentity, InMemoryTransport, Task, Transport, WakuA2ANode};
+use logos_messaging_a2a::{
+    A2AEnvelope, AgentIdentity, InMemoryTransport, Task, Transport, WakuA2ANode,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {

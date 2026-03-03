@@ -99,7 +99,12 @@ impl<T: Transport> SdsTransport<T> {
                 .context("SDS publish failed")?;
 
             // Wait for ACK with timeout
-            match tokio::time::timeout(self.config.ack_timeout, wait_for_ack(&mut ack_rx, message_id)).await {
+            match tokio::time::timeout(
+                self.config.ack_timeout,
+                wait_for_ack(&mut ack_rx, message_id),
+            )
+            .await
+            {
                 Ok(true) => {
                     let _ = self.inner.unsubscribe(&ack_topic).await;
                     return Ok(true);

@@ -1,10 +1,10 @@
 //! Integration test: two nodes communicating via InMemoryTransport.
 
-use std::time::Duration;
 use logos_messaging_a2a_core::{topics, A2AEnvelope, Task};
 use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::memory::InMemoryTransport;
 use logos_messaging_a2a_transport::Transport;
+use std::time::Duration;
 
 #[tokio::test]
 async fn test_discover_agents() {
