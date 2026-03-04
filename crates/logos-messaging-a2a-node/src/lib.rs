@@ -2,14 +2,17 @@ use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, Task};
 use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
-use logos_messaging_a2a_transport::sds::SdsTransport;
+use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
 use tokio::sync::mpsc;
 
 /// A2A node: announce, discover, send/receive tasks over Waku.
+///
+/// Uses SDS MessageChannel for reliable, causally-ordered delivery with
+/// bloom filter deduplication and implicit ACK via remote bloom filters.
 pub struct WakuA2ANode<T: Transport> {
     pub card: AgentCard,
-    transport: SdsTransport<T>,
+    channel: MessageChannel<T>,
     signing_key: SigningKey,
     /// Optional X25519 identity for encrypted sessions.
     identity: Option<AgentIdentity>,
@@ -33,13 +36,17 @@ impl<T: Transport> WakuA2ANode<T> {
             description: description.to_string(),
             version: "0.1.0".to_string(),
             capabilities,
-            public_key,
+            public_key: public_key.clone(),
             intro_bundle: None,
         };
 
         Self {
             card,
-            transport: SdsTransport::new(transport),
+            channel: MessageChannel::new(
+                format!("node-{}", &public_key[..8]),
+                public_key,
+                transport,
+            ),
             signing_key,
             identity: None,
             task_rx: tokio::sync::Mutex::new(None),
@@ -69,13 +76,17 @@ impl<T: Transport> WakuA2ANode<T> {
             description: description.to_string(),
             version: "0.1.0".to_string(),
             capabilities,
-            public_key,
+            public_key: public_key.clone(),
             intro_bundle: Some(intro_bundle),
         };
 
         Self {
             card,
-            transport: SdsTransport::new(transport),
+            channel: MessageChannel::new(
+                format!("node-{}", &public_key[..8]),
+                public_key,
+                transport,
+            ),
             signing_key,
             identity: Some(identity),
             task_rx: tokio::sync::Mutex::new(None),
@@ -102,13 +113,56 @@ impl<T: Transport> WakuA2ANode<T> {
             description: description.to_string(),
             version: "0.1.0".to_string(),
             capabilities,
-            public_key,
+            public_key: public_key.clone(),
             intro_bundle: None,
         };
 
         Self {
             card,
-            transport: SdsTransport::new(transport),
+            channel: MessageChannel::new(
+                format!("node-{}", &public_key[..8]),
+                public_key,
+                transport,
+            ),
+            signing_key,
+            identity: None,
+            task_rx: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Create a node with custom SDS channel configuration.
+    pub fn with_config(
+        name: &str,
+        description: &str,
+        capabilities: Vec<String>,
+        transport: T,
+        config: ChannelConfig,
+    ) -> Self {
+        let signing_key = SigningKey::random(&mut rand_core());
+        let public_key = hex::encode(
+            signing_key
+                .verifying_key()
+                .to_encoded_point(true)
+                .as_bytes(),
+        );
+
+        let card = AgentCard {
+            name: name.to_string(),
+            description: description.to_string(),
+            version: "0.1.0".to_string(),
+            capabilities,
+            public_key: public_key.clone(),
+            intro_bundle: None,
+        };
+
+        Self {
+            card,
+            channel: MessageChannel::with_config(
+                format!("node-{}", &public_key[..8]),
+                public_key,
+                transport,
+                config,
+            ),
             signing_key,
             identity: None,
             task_rx: tokio::sync::Mutex::new(None),
@@ -130,12 +184,20 @@ impl<T: Transport> WakuA2ANode<T> {
         self.identity.as_ref()
     }
 
+    /// Access the underlying SDS MessageChannel.
+    pub fn channel(&self) -> &MessageChannel<T> {
+        &self.channel
+    }
+
     /// Broadcast this agent's card on the discovery topic.
+    ///
+    /// Discovery uses raw A2AEnvelope (not SDS-wrapped) since it's a
+    /// broadcast to unknown peers who may not speak SDS yet.
     pub async fn announce(&self) -> Result<()> {
         let envelope = A2AEnvelope::AgentCard(self.card.clone());
         let payload = serde_json::to_vec(&envelope).context("Failed to serialize AgentCard")?;
-        self.transport
-            .inner()
+        self.channel
+            .transport()
             .publish(topics::DISCOVERY, &payload)
             .await
             .context("Failed to announce AgentCard")?;
@@ -145,7 +207,7 @@ impl<T: Transport> WakuA2ANode<T> {
 
     /// Discover agents by subscribing to the discovery topic and draining messages.
     pub async fn discover(&self) -> Result<Vec<AgentCard>> {
-        let mut rx = self.transport.inner().subscribe(topics::DISCOVERY).await?;
+        let mut rx = self.channel.transport().subscribe(topics::DISCOVERY).await?;
 
         let mut cards = Vec::new();
         while let Ok(msg) = rx.try_recv() {
@@ -156,11 +218,12 @@ impl<T: Transport> WakuA2ANode<T> {
             }
         }
 
-        let _ = self.transport.inner().unsubscribe(topics::DISCOVERY).await;
+        let _ = self.channel.transport().unsubscribe(topics::DISCOVERY).await;
         Ok(cards)
     }
 
-    /// Send a task to another agent. Uses SDS for reliable delivery.
+    /// Send a task to another agent. Uses SDS reliable delivery with
+    /// causal ordering, bloom filter, and retransmission.
     pub async fn send_task(&self, task: &Task) -> Result<bool> {
         self.send_task_to(task, None).await
     }
@@ -176,9 +239,11 @@ impl<T: Transport> WakuA2ANode<T> {
         let envelope = self.maybe_encrypt_task(task, recipient_card)?;
         let payload = serde_json::to_vec(&envelope).context("Failed to serialize envelope")?;
 
-        let acked = self
-            .transport
-            .publish_reliable(&topic, &payload, &task.id)
+        // Use SDS reliable delivery — the SDS message_id (SHA256 of payload)
+        // is used for ACK routing, not the task UUID.
+        let (_msg, acked) = self
+            .channel
+            .send_reliable(&topic, &payload)
             .await
             .context("SDS publish failed")?;
 
@@ -191,14 +256,24 @@ impl<T: Transport> WakuA2ANode<T> {
     }
 
     /// Poll for incoming tasks addressed to this agent.
-    /// Lazily subscribes to the task topic on first call.
+    ///
+    /// Lazily subscribes to the task topic on first call. Processes incoming
+    /// messages through the SDS MessageChannel for:
+    /// - Bloom filter deduplication
+    /// - Causal ordering (buffering out-of-order messages)
+    /// - Lamport timestamp synchronization
+    /// - Implicit ACK via bloom filter exchange
+    ///
+    /// Also sends explicit ACKs using the SDS message_id so that the sender's
+    /// `send_reliable` retransmission loop can terminate.
+    ///
     /// Automatically decrypts encrypted tasks if this node has an identity.
     pub async fn poll_tasks(&self) -> Result<Vec<Task>> {
         let raw_messages = {
             let mut task_rx = self.task_rx.lock().await;
             if task_rx.is_none() {
                 let topic = topics::task_topic(&self.card.public_key);
-                *task_rx = Some(self.transport.inner().subscribe(&topic).await?);
+                *task_rx = Some(self.channel.transport().subscribe(&topic).await?);
             }
             let rx = task_rx.as_mut().unwrap();
 
@@ -209,42 +284,81 @@ impl<T: Transport> WakuA2ANode<T> {
             msgs
         };
 
-        let messages = self.transport.filter_dedup(raw_messages);
         let mut tasks = Vec::new();
 
-        for msg in messages {
-            if let Ok(envelope) = serde_json::from_slice::<A2AEnvelope>(&msg) {
-                match envelope {
-                    A2AEnvelope::Task(task) => {
-                        let _ = self.transport.send_ack(&task.id).await;
+        for msg in raw_messages {
+            // Try to process as SDS message (causal ordering + dedup + bloom)
+            let delivered_content = self.channel.receive(&msg);
+
+            if !delivered_content.is_empty() {
+                // SDS-wrapped messages: extract tasks from delivered content
+                for content in delivered_content {
+                    // Send explicit ACK using the SDS message_id so the sender's
+                    // send_reliable() retransmission terminates promptly.
+                    let _ = self.channel.send_ack("", &content.message_id).await;
+
+                    if let Some(task) = self.extract_task(&content.content).await? {
                         tasks.push(task);
                     }
-                    A2AEnvelope::EncryptedTask {
-                        encrypted,
-                        sender_pubkey,
-                    } => {
-                        if let Some(ref identity) = self.identity {
-                            match self.decrypt_task(identity, &sender_pubkey, &encrypted) {
-                                Ok(task) => {
-                                    let _ = self.transport.send_ack(&task.id).await;
-                                    tasks.push(task);
-                                }
-                                Err(e) => {
-                                    eprintln!("[node] Failed to decrypt task: {}", e);
-                                }
-                            }
-                        } else {
-                            eprintln!("[node] Received encrypted task but no identity configured");
-                        }
+                }
+            } else {
+                // Backward compat: try raw A2AEnvelope (non-SDS peers)
+                if let Ok(envelope) = serde_json::from_slice::<A2AEnvelope>(&msg) {
+                    // Dedup via bloom filter using a hash of the raw bytes
+                    let dedup_id =
+                        logos_messaging_a2a_transport::sds::compute_message_id(&msg);
+                    if self.channel.is_duplicate(&dedup_id) {
+                        continue;
                     }
-                    _ => {}
+                    self.channel.bloom.set(&dedup_id);
+
+                    if let Some(task) = self.extract_task_from_envelope(envelope).await? {
+                        tasks.push(task);
+                    }
                 }
             }
         }
         Ok(tasks)
     }
 
+    /// Extract a task from raw payload bytes (inner content of an SDS message).
+    async fn extract_task(&self, payload: &[u8]) -> Result<Option<Task>> {
+        if let Ok(envelope) = serde_json::from_slice::<A2AEnvelope>(payload) {
+            self.extract_task_from_envelope(envelope).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Extract a task from an A2AEnvelope, handling decryption.
+    async fn extract_task_from_envelope(&self, envelope: A2AEnvelope) -> Result<Option<Task>> {
+        match envelope {
+            A2AEnvelope::Task(task) => Ok(Some(task)),
+            A2AEnvelope::EncryptedTask {
+                encrypted,
+                sender_pubkey,
+            } => {
+                if let Some(ref identity) = self.identity {
+                    match self.decrypt_task(identity, &sender_pubkey, &encrypted) {
+                        Ok(task) => Ok(Some(task)),
+                        Err(e) => {
+                            eprintln!("[node] Failed to decrypt task: {}", e);
+                            Ok(None)
+                        }
+                    }
+                } else {
+                    eprintln!("[node] Received encrypted task but no identity configured");
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Respond to a task: send back a completed task with result.
+    ///
+    /// Uses SDS causal send (maintains ordering, includes bloom filter
+    /// for implicit ACK) but does not block on explicit ACK.
     pub async fn respond(&self, task: &Task, result_text: &str) -> Result<()> {
         self.respond_to(task, result_text, None).await
     }
@@ -262,9 +376,9 @@ impl<T: Transport> WakuA2ANode<T> {
         let envelope = self.maybe_encrypt_task(&response, sender_card)?;
         let payload = serde_json::to_vec(&envelope)?;
 
-        self.transport
-            .inner()
-            .publish(&topic, &payload)
+        // Use causal send for responses (maintains ordering, no retransmit block)
+        self.channel
+            .send(&topic, &payload)
             .await
             .context("Failed to send response")?;
 
@@ -479,5 +593,14 @@ mod tests {
 
         let tasks = node.poll_tasks().await.unwrap();
         assert!(tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_channel_accessible() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test agent", vec![], transport);
+        assert_eq!(node.channel().sender_id(), node.pubkey());
+        assert_eq!(node.channel().outgoing_pending(), 0);
+        assert_eq!(node.channel().incoming_pending(), 0);
     }
 }
