@@ -94,6 +94,7 @@ pub struct MessageChannel<T: Transport> {
     incoming_buffer: Mutex<Vec<SdsMessage>>,
 
     /// Track possible acks per message ID.
+    #[allow(dead_code)]
     possible_acks: Mutex<std::collections::HashMap<MessageId, u32>>,
 }
 
@@ -126,7 +127,8 @@ impl<T: Transport> MessageChannel<T> {
             local_history: Mutex::new(VecDeque::new()),
             outgoing_buffer: Mutex::new(Vec::new()),
             incoming_buffer: Mutex::new(Vec::new()),
-            possible_acks: Mutex::new(std::collections::HashMap::new()),
+            #[allow(dead_code)]
+    possible_acks: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
