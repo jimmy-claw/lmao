@@ -33,6 +33,8 @@ k256 = "0.13"
 hex = "0.4"
 anyhow = "1"
 async-trait = "0.1"
+sha2 = "0.10"
+bloomfilter = "1"
 
 [dependencies]
 logos-messaging-a2a-crypto = { path = "crates/logos-messaging-a2a-crypto" }
@@ -52,3 +54,5 @@ path = "examples/echo_agent.rs"
 [[example]]
 name = "ping_pong"
 path = "examples/ping_pong.rs"
+
+# No change needed here — sha2 goes in transport crate
