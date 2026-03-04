@@ -16,4 +16,7 @@ reqwest = { workspace = true, optional = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+bloomfilter = { workspace = true }
 base64 = { version = "0.22", optional = true }
