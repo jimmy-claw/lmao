@@ -15,11 +15,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use waku_bindings::{
-    waku_new, Encoding, LibwakuResponse, WakuContentTopic, WakuEvent, WakuMessage,
-    WakuNodeConfig, WakuNodeHandle, Running,
-};
 use waku_bindings::general::pubsubtopic::PubsubTopic;
+use waku_bindings::{
+    waku_new, Encoding, LibwakuResponse, Running, WakuContentTopic, WakuEvent, WakuMessage,
+    WakuNodeConfig, WakuNodeHandle,
+};
 
 const DEFAULT_PUBSUB_TOPIC: &str = "/waku/2/default-waku/proto";
 
@@ -34,7 +34,10 @@ unsafe fn assert_send<T>(fut: impl Future<Output = T>) -> impl Future<Output = T
     unsafe impl<F> Send for AssertSend<F> {}
     impl<F: Future> Future for AssertSend<F> {
         type Output = F::Output;
-        fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        fn poll(
+            self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
             // SAFETY: pinning is structural
             unsafe { self.map_unchecked_mut(|s| &mut s.0).poll(cx) }
         }
@@ -89,9 +92,7 @@ impl NativeWakuTransport {
             .await
             .map_err(|e| anyhow::anyhow!("waku start failed: {}", e))?;
 
-        unsafe {
-            assert_send(node.relay_subscribe(&PubsubTopic::new(DEFAULT_PUBSUB_TOPIC)))
-        }
+        unsafe { assert_send(node.relay_subscribe(&PubsubTopic::new(DEFAULT_PUBSUB_TOPIC))) }
             .await
             .map_err(|e| anyhow::anyhow!("relay_subscribe failed: {}", e))?;
 
@@ -100,9 +101,7 @@ impl NativeWakuTransport {
 
     /// Connect to a peer by multiaddress.
     pub async fn connect(&self, addr: &str) -> Result<()> {
-        let multiaddr: waku_bindings::Multiaddr = addr
-            .parse()
-            .context("invalid multiaddress")?;
+        let multiaddr: waku_bindings::Multiaddr = addr.parse().context("invalid multiaddress")?;
         // SAFETY: waku FFI futures are safe to send across threads
         unsafe { assert_send(self.node.connect(&multiaddr, None)) }
             .await
@@ -138,10 +137,13 @@ impl Transport for NativeWakuTransport {
 
         // SAFETY: waku FFI futures are safe to send across threads
         unsafe {
-            assert_send(self.node.relay_publish_message(&message, &pubsub_topic, None))
+            assert_send(
+                self.node
+                    .relay_publish_message(&message, &pubsub_topic, None),
+            )
         }
-            .await
-            .map_err(|e| anyhow::anyhow!("publish failed: {}", e))?;
+        .await
+        .map_err(|e| anyhow::anyhow!("publish failed: {}", e))?;
         Ok(())
     }
 
