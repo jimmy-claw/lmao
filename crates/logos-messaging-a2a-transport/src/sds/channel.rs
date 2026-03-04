@@ -413,13 +413,34 @@ impl<T: Transport> MessageChannel<T> {
     }
 
     /// Check outgoing buffer against a remote bloom filter for implicit ACKs.
-    fn check_outgoing_acks(&self, _remote_bloom_bytes: &[u8]) {
-        // TODO: deserialize remote bloom filter and check our outgoing message IDs.
-        // For now, we rely on explicit ACKs. This will be implemented when
-        // bloom filter serialization format is standardized across implementations.
-        //
-        // The JS implementation uses possible_acks_threshold to count how many
-        // times a message appears in remote blooms before considering it acked.
+    ///
+    /// When a remote peer includes a bloom filter in their message, we check
+    /// if any of our outgoing (unacked) messages appear in it. If a message
+    /// appears in enough remote blooms (>= possible_acks_threshold), we
+    /// consider it implicitly acknowledged and remove it from the outgoing buffer.
+    fn check_outgoing_acks(&self, remote_bloom_bytes: &[u8]) {
+        let remote_bloom = match SdsBloomFilter::from_bytes(remote_bloom_bytes) {
+            Some(b) => b,
+            None => return, // malformed bloom, skip
+        };
+
+        let mut outgoing = self.outgoing_buffer.lock().unwrap();
+        let mut possible_acks = self.possible_acks.lock().unwrap();
+
+        outgoing.retain(|msg| {
+            if remote_bloom.probably_contains(&msg.message_id) {
+                let count = possible_acks
+                    .entry(msg.message_id.clone())
+                    .or_insert(0);
+                *count += 1;
+                if *count >= self.config.possible_acks_threshold {
+                    // Implicitly acknowledged — remove from outgoing buffer
+                    possible_acks.remove(&msg.message_id);
+                    return false; // don't retain
+                }
+            }
+            true // keep in buffer
+        });
     }
 
     /// Try to deliver buffered messages whose dependencies are now satisfied.
@@ -563,6 +584,48 @@ mod tests {
         // msg1 has no deps (or deps are satisfied), delivers immediately
         // Then resolving buffered msg2 should also deliver
         assert!(delivered.len() >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_implicit_ack_via_bloom() {
+        let transport = InMemoryTransport::new();
+        let config = ChannelConfig {
+            possible_acks_threshold: 2,
+            ..Default::default()
+        };
+        let alice = MessageChannel::with_config(
+            "chan-1".to_string(),
+            "alice".to_string(),
+            transport.clone(),
+            config,
+        );
+        let bob = MessageChannel::new("chan-1".to_string(), "bob".to_string(), transport.clone());
+
+        let topic = "/lmao/1/test/proto";
+
+        // Alice sends a message — it goes into her outgoing buffer
+        let msg = alice.send(topic, b"need ack").await.unwrap();
+        assert_eq!(alice.outgoing_pending(), 1);
+
+        // Bob receives it (puts it in his bloom)
+        let raw = serde_json::to_vec(&SdsMessage::Content(msg.clone())).unwrap();
+        bob.receive(&raw);
+
+        // Bob sends a sync — his bloom now contains alice's message
+        let sync = bob.send_sync(topic).await.unwrap();
+        let sync_raw = serde_json::to_vec(&SdsMessage::Sync(sync)).unwrap();
+
+        // Alice receives bob's sync — first bloom hit (count = 1, threshold = 2)
+        alice.receive(&sync_raw);
+        assert_eq!(alice.outgoing_pending(), 1); // not yet acked
+
+        // Bob sends another sync
+        let sync2 = bob.send_sync(topic).await.unwrap();
+        let sync2_raw = serde_json::to_vec(&SdsMessage::Sync(sync2)).unwrap();
+
+        // Alice receives second sync — second bloom hit (count = 2 >= threshold)
+        alice.receive(&sync2_raw);
+        assert_eq!(alice.outgoing_pending(), 0); // implicitly acked!
     }
 
     #[tokio::test]
