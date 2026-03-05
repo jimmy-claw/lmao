@@ -1,0 +1,9 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+  <qresource prefix="/lmao">
+    <file>qmldir</file>
+    <file>Theme.qml</file>
+    <file>LmaoView.qml</file>
+    <file>AgentCard.qml</file>
+  </qresource>
+</RCC>
