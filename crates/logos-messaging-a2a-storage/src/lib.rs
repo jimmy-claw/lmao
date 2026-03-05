@@ -34,6 +34,11 @@ mod logos_core_backend;
 #[cfg(feature = "logos-core")]
 pub use logos_core_backend::LogosCoreStorageBackend;
 
+#[cfg(feature = "libstorage")]
+mod libstorage_backend;
+#[cfg(feature = "libstorage")]
+pub use libstorage_backend::LibstorageBackend;
+
 use std::fmt;
 
 /// Errors returned by storage operations.
