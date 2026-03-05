@@ -6,5 +6,4 @@ pub use logos_messaging_a2a_storage::{
 };
 pub use logos_messaging_a2a_transport::memory::InMemoryTransport;
 pub use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
-pub use logos_messaging_a2a_transport::sds::SdsTransport;
 pub use logos_messaging_a2a_transport::Transport;
