@@ -7,6 +7,7 @@ edition = "2021"
 default = ["rest"]
 rest = ["reqwest"]
 logos-core = ["base64"]
+native-waku = ["waku-bindings"]
 
 [dependencies]
 tokio = { workspace = true }
@@ -20,3 +21,7 @@ hex = { workspace = true }
 sha2 = { workspace = true }
 bloomfilter = { workspace = true }
 base64 = { version = "0.22", optional = true }
+waku-bindings = { git = "https://github.com/jimmy-claw/logos-delivery-rust-bindings", branch = "jimmy/rln-optional", default-features = false, optional = true }
+
+[build-dependencies]
+cc = "1"

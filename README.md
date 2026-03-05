@@ -87,6 +87,29 @@ Claude Desktop (`claude_desktop_config.json`) or Cursor (`.cursor/mcp.json`):
 | `send_to_agent` | Send a message to an agent by name and get a response |
 | `list_cached_agents` | List agents from the last discovery (no network call) |
 
+### Path 2.5: Native Waku Transport (no Docker needed)
+
+Run a Waku node in-process using libwaku FFI — no separate nwaku container required.
+
+**Prerequisites:** Nim 2.x (`choosenim`), Rust stable.
+
+```bash
+# Build with native-waku feature
+cargo build -p logos-messaging-a2a-transport --features native-waku
+
+# Use in code:
+use logos_messaging_a2a_transport::NativeWakuTransport;
+use waku_bindings::WakuNodeConfig;
+
+let transport = NativeWakuTransport::new(WakuNodeConfig {
+    tcp_port: Some(60010),
+    ..Default::default()
+}).await?;
+transport.connect("/ip4/x.x.x.x/tcp/60000/p2p/...").await?;
+```
+
+The `NativeWakuTransport` implements the same `Transport` trait — drop-in replacement for `NwakuRestTransport`.
+
 ### Path 2: Logos Core IComponent (future)
 
 Once the `.lgx` plugin is ready (auto-built on `v*` tags):
@@ -316,7 +339,7 @@ module/
 - [x] `LogosCoreDeliveryTransport` — native delivery_module IPC transport
 - [x] `LogosCoreStorageBackend` — native storage_module IPC backend
 - [x] Logos Core e2e demo (stub + real SDK support)
-- [ ] libwaku FFI — embedded libwaku (no separate nwaku process)
+- [x] libwaku FFI —  via  feature (no separate nwaku process)
 - [ ] Full SDS protocol — bloom filters, causal ordering, batch ACK
 - [ ] Logos Chat SDK — Double Ratchet for forward secrecy
 - [ ] LEZ agent registry — on-chain AgentCards via SPELbook
