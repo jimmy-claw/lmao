@@ -102,11 +102,11 @@ impl SdsBloomFilter {
         let bitmap_bits = u64::from_le_bytes(data[0..8].try_into().ok()?);
         let k_num = u32::from_le_bytes(data[8..12].try_into().ok()?);
         let mut sip_keys = [(0u64, 0u64); 2];
-        for i in 0..2 {
+        for (i, sip_key) in sip_keys.iter_mut().enumerate() {
             let offset = 12 + i * 16;
             let a = u64::from_le_bytes(data[offset..offset + 8].try_into().ok()?);
             let b = u64::from_le_bytes(data[offset + 8..offset + 16].try_into().ok()?);
-            sip_keys[i] = (a, b);
+            *sip_key = (a, b);
         }
         let bitmap = &data[44..];
         let filter = Bloom::from_existing(bitmap, bitmap_bits, k_num, sip_keys);
