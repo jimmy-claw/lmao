@@ -16,6 +16,7 @@ members = [
     "crates/logos-messaging-a2a-mcp",
     "crates/lmao-ffi",
     "crates/logos-messaging-a2a-ffi",
+    "crates/logos-messaging-a2a-execution",
 ]
 # The demo enables the `logos-core` feature which requires liblogos_core.so at
 # link time. Excluding it from the workspace prevents feature unification from
