@@ -1026,4 +1026,128 @@ mod tests {
         // The reconstructed task should NOT have a payload_cid (it's the original)
         assert!(received[0].payload_cid.is_none());
     }
+    #[tokio::test]
+    async fn test_encrypted_send_receive_roundtrip() {
+        let transport = MockTransport::new();
+
+        // Two encrypted nodes on the same transport
+        let _alice = WakuA2ANode::with_config(
+            "alice",
+            "alice agent",
+            vec!["text".into()],
+            transport.clone(),
+            fast_config(),
+        );
+        // Replace alice with encrypted version — need new_encrypted + fast config
+        // Actually, new_encrypted doesn't accept config, so we test via send_task_to with cards
+        let alice = WakuA2ANode::new_encrypted(
+            "alice",
+            "alice agent",
+            vec!["text".into()],
+            transport.clone(),
+        );
+        let bob = WakuA2ANode::new_encrypted(
+            "bob",
+            "bob agent",
+            vec!["text".into()],
+            transport.clone(),
+        );
+        let bob_pubkey = bob.pubkey().to_string();
+
+        // Bob subscribes to his task topic
+        let _ = bob.poll_tasks().await.unwrap();
+
+        // Alice sends an encrypted task to Bob
+        let task = Task::new(alice.pubkey(), &bob_pubkey, "secret message");
+        alice.send_task_to(&task, Some(&bob.card)).await.unwrap();
+
+        // Bob polls and should decrypt the message
+        let received = bob.poll_tasks().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].text(), Some("secret message"));
+        assert_eq!(received[0].from, alice.pubkey());
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_wrong_recipient_cannot_decrypt() {
+        let transport = MockTransport::new();
+
+        let alice = WakuA2ANode::new_encrypted(
+            "alice", "alice", vec![], transport.clone(),
+        );
+        let bob = WakuA2ANode::new_encrypted(
+            "bob", "bob", vec![], transport.clone(),
+        );
+        let eve = WakuA2ANode::new_encrypted(
+            "eve", "eve", vec![], transport.clone(),
+        );
+
+        // Eve listens on Bob's topic (she shouldn't be able to decrypt)
+        // We test at the decrypt_task level directly
+        let task = Task::new(alice.pubkey(), bob.pubkey(), "for bob only");
+        let their_pubkey = logos_messaging_a2a_crypto::AgentIdentity::parse_public_key(
+            &bob.card.intro_bundle.as_ref().unwrap().agent_pubkey,
+        ).unwrap();
+        let session_key = alice.identity().unwrap().shared_key(&their_pubkey);
+        let task_json = serde_json::to_vec(&task).unwrap();
+        let encrypted = session_key.encrypt(&task_json).unwrap();
+
+        // Eve tries to decrypt with her own identity — should fail
+        let eve_result = eve.identity().unwrap()
+            .shared_key(&logos_messaging_a2a_crypto::AgentIdentity::parse_public_key(
+                &alice.card.intro_bundle.as_ref().unwrap().agent_pubkey,
+            ).unwrap())
+            .decrypt(&encrypted);
+        assert!(eve_result.is_err(), "Eve should not be able to decrypt Bob's message");
+    }
+
+    #[tokio::test]
+    async fn test_respond_sends_to_sender() {
+        let transport = MockTransport::new();
+        let published = transport.published.clone();
+
+        let node = WakuA2ANode::with_config(
+            "responder", "responder", vec![], transport, fast_config(),
+        );
+
+        let incoming_task = Task::new("02sender", node.pubkey(), "do something");
+        node.respond(&incoming_task, "done!").await.unwrap();
+
+        let msgs = published.lock().unwrap();
+        // Response should be published to the sender's task topic
+        assert!(!msgs.is_empty());
+        let expected_topic = topics::task_topic("02sender");
+        assert!(msgs.iter().any(|(topic, _)| topic == &expected_topic));
+    }
+
+    #[tokio::test]
+    async fn test_discover_excludes_self() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("self", "self", vec![], transport.clone());
+
+        // Inject own card into discovery
+        let self_envelope = A2AEnvelope::AgentCard(node.card.clone());
+        transport.inject(
+            topics::DISCOVERY,
+            serde_json::to_vec(&self_envelope).unwrap(),
+        );
+
+        let cards = node.discover().await.unwrap();
+        assert!(cards.is_empty(), "Should not discover self");
+    }
+
+    #[tokio::test]
+    async fn test_send_text_convenience() {
+        let transport = MockTransport::new();
+        let published = transport.published.clone();
+        let node = WakuA2ANode::with_config(
+            "sender", "sender", vec![], transport, fast_config(),
+        );
+
+        let task = node.send_text("02recipient", "hello!").await.unwrap();
+        assert_eq!(task.from, node.pubkey());
+        assert_eq!(task.to, "02recipient");
+        assert_eq!(task.text(), Some("hello!"));
+        assert!(!published.lock().unwrap().is_empty());
+    }
 }
