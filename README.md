@@ -279,6 +279,25 @@ LOGOS_CORE_LIB_DIR=/path/to/sdk/lib make demo-logos-core-real
 End-to-end encrypted using **X25519 ECDH + ChaCha20-Poly1305** (stepping stone).
 Future: [Logos Chat SDK](https://github.com/nicola/logos-chat-sdk) with Double Ratchet for forward secrecy.
 
+## Storage Offloading
+
+When a message payload exceeds a configurable threshold (default 64 KB), LMAO
+automatically offloads it to Logos Storage (Codex) and sends only the CID in
+the Waku envelope. The receiver fetches the full payload by CID transparently.
+
+```rust
+use logos_messaging_a2a_node::{StorageOffloadConfig, WakuA2ANode};
+use logos_messaging_a2a_storage::StorageBackend;
+use std::sync::Arc;
+
+// Any StorageBackend impl works: LogosStorageRest, LibstorageBackend, etc.
+let storage: Arc<dyn StorageBackend> = /* your backend */;
+
+let node = WakuA2ANode::new("agent", "my agent", vec![], transport)
+    .with_storage_offload(StorageOffloadConfig::new(storage));
+// Large payloads are now offloaded automatically on send and fetched on receive.
+```
+
 ## Testing
 
 All transport implementations are swappable via the `Transport` trait.
@@ -340,6 +359,7 @@ module/
 - [x] `LogosCoreStorageBackend` — native storage_module IPC backend
 - [x] Logos Core e2e demo (stub + real SDK support)
 - [x] libwaku FFI —  via  feature (no separate nwaku process)
+- [x] CID-based large payload offloading to Logos Storage
 - [ ] Full SDS protocol — bloom filters, causal ordering, batch ACK
 - [ ] Logos Chat SDK — Double Ratchet for forward secrecy
 - [ ] LEZ agent registry — on-chain AgentCards via SPELbook

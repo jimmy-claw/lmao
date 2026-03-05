@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 pub use logos_messaging_a2a_core::Task as TaskType;
-use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, Task};
+use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, Message, Task};
+use logos_messaging_a2a_storage::StorageBackend;
 use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
 use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
@@ -34,6 +36,37 @@ impl Session {
     }
 }
 
+/// Configuration for offloading large payloads to Logos Storage.
+///
+/// When a serialized message envelope exceeds `threshold_bytes`, the payload
+/// is uploaded to storage and only the CID is sent over the Waku network.
+/// The receiver automatically fetches the full payload by CID.
+pub struct StorageOffloadConfig {
+    /// Storage backend for uploading/downloading payloads.
+    pub backend: Arc<dyn StorageBackend>,
+    /// Payload size threshold in bytes. Payloads larger than this are offloaded.
+    /// Default: 65 536 (64 KB).
+    pub threshold_bytes: usize,
+}
+
+impl StorageOffloadConfig {
+    /// Create a new config with the given backend and default threshold (64 KB).
+    pub fn new(backend: Arc<dyn StorageBackend>) -> Self {
+        Self {
+            backend,
+            threshold_bytes: 65_536,
+        }
+    }
+
+    /// Create with a custom threshold.
+    pub fn with_threshold(backend: Arc<dyn StorageBackend>, threshold_bytes: usize) -> Self {
+        Self {
+            backend,
+            threshold_bytes,
+        }
+    }
+}
+
 /// A2A node: announce, discover, send/receive tasks over Waku.
 ///
 /// Uses SDS MessageChannel for reliable, causally-ordered delivery with
@@ -48,6 +81,8 @@ pub struct WakuA2ANode<T: Transport> {
     task_rx: tokio::sync::Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
     /// Active conversation sessions.
     sessions: std::sync::Mutex<HashMap<String, Session>>,
+    /// Optional storage offload for large payloads.
+    storage_offload: Option<StorageOffloadConfig>,
 }
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -81,6 +116,7 @@ impl<T: Transport> WakuA2ANode<T> {
             identity: None,
             task_rx: tokio::sync::Mutex::new(None),
             sessions: std::sync::Mutex::new(HashMap::new()),
+            storage_offload: None,
         }
     }
 
@@ -122,6 +158,7 @@ impl<T: Transport> WakuA2ANode<T> {
             identity: Some(identity),
             task_rx: tokio::sync::Mutex::new(None),
             sessions: std::sync::Mutex::new(HashMap::new()),
+            storage_offload: None,
         }
     }
 
@@ -160,6 +197,7 @@ impl<T: Transport> WakuA2ANode<T> {
             identity: None,
             task_rx: tokio::sync::Mutex::new(None),
             sessions: std::sync::Mutex::new(HashMap::new()),
+            storage_offload: None,
         }
     }
 
@@ -200,7 +238,18 @@ impl<T: Transport> WakuA2ANode<T> {
             identity: None,
             task_rx: tokio::sync::Mutex::new(None),
             sessions: std::sync::Mutex::new(HashMap::new()),
+            storage_offload: None,
         }
+    }
+
+    /// Enable CID-based offloading of large payloads to Logos Storage.
+    ///
+    /// When configured, payloads exceeding the threshold are automatically
+    /// uploaded to storage. Only the CID is sent over Waku. Receivers with
+    /// the same config auto-fetch the full payload by CID.
+    pub fn with_storage_offload(mut self, config: StorageOffloadConfig) -> Self {
+        self.storage_offload = Some(config);
+        self
     }
 
     /// Get this agent's public key hex string.
@@ -277,9 +326,7 @@ impl<T: Transport> WakuA2ANode<T> {
         recipient_card: Option<&AgentCard>,
     ) -> Result<bool> {
         let topic = topics::task_topic(&task.to);
-
-        let envelope = self.maybe_encrypt_task(task, recipient_card)?;
-        let payload = serde_json::to_vec(&envelope).context("Failed to serialize envelope")?;
+        let payload = self.prepare_payload(task, recipient_card).await?;
 
         // Use SDS reliable delivery — the SDS message_id (SHA256 of payload)
         // is used for ACK routing, not the task UUID.
@@ -421,17 +468,17 @@ impl<T: Transport> WakuA2ANode<T> {
         }
     }
 
-    /// Extract a task from an A2AEnvelope, handling decryption.
+    /// Extract a task from an A2AEnvelope, handling decryption and CID fetching.
     async fn extract_task_from_envelope(&self, envelope: A2AEnvelope) -> Result<Option<Task>> {
         match envelope {
-            A2AEnvelope::Task(task) => Ok(Some(task)),
+            A2AEnvelope::Task(task) => self.maybe_fetch_offloaded(task).await,
             A2AEnvelope::EncryptedTask {
                 encrypted,
                 sender_pubkey,
             } => {
                 if let Some(ref identity) = self.identity {
                     match self.decrypt_task(identity, &sender_pubkey, &encrypted) {
-                        Ok(task) => Ok(Some(task)),
+                        Ok(task) => self.maybe_fetch_offloaded(task).await,
                         Err(e) => {
                             eprintln!("[node] Failed to decrypt task: {}", e);
                             Ok(None)
@@ -444,6 +491,26 @@ impl<T: Transport> WakuA2ANode<T> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// If the task has a `payload_cid`, fetch the full payload from storage.
+    async fn maybe_fetch_offloaded(&self, task: Task) -> Result<Option<Task>> {
+        if let Some(ref cid) = task.payload_cid {
+            if let Some(ref offload) = self.storage_offload {
+                let data = offload
+                    .backend
+                    .download(cid)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("storage fetch by CID failed: {e}"))?;
+                let original: Task = serde_json::from_slice(&data)
+                    .context("Failed to deserialize offloaded task")?;
+                return Ok(Some(original));
+            }
+            eprintln!(
+                "[node] Task has payload_cid but no storage backend configured"
+            );
+        }
+        Ok(Some(task))
     }
 
     /// Respond to a task: send back a completed task with result.
@@ -463,9 +530,7 @@ impl<T: Transport> WakuA2ANode<T> {
     ) -> Result<()> {
         let response = task.respond(result_text);
         let topic = topics::task_topic(&response.to);
-
-        let envelope = self.maybe_encrypt_task(&response, sender_card)?;
-        let payload = serde_json::to_vec(&envelope)?;
+        let payload = self.prepare_payload(&response, sender_card).await?;
 
         // Use causal send for responses (maintains ordering, no retransmit block)
         self.channel
@@ -482,6 +547,50 @@ impl<T: Transport> WakuA2ANode<T> {
         let task = Task::new(self.pubkey(), to, text);
         self.send_task(&task).await?;
         Ok(task)
+    }
+
+    /// Serialize a task into an envelope, offloading to storage if needed.
+    ///
+    /// When storage offload is configured and the serialized envelope exceeds
+    /// the threshold, the original task is uploaded to storage and a slim
+    /// envelope (with `payload_cid` set and content cleared) is returned.
+    async fn prepare_payload(
+        &self,
+        task: &Task,
+        recipient_card: Option<&AgentCard>,
+    ) -> Result<Vec<u8>> {
+        let envelope = self.maybe_encrypt_task(task, recipient_card)?;
+        let payload = serde_json::to_vec(&envelope).context("Failed to serialize envelope")?;
+
+        if let Some(ref offload) = self.storage_offload {
+            if payload.len() > offload.threshold_bytes {
+                // Upload the original task (plaintext) to storage
+                let task_bytes =
+                    serde_json::to_vec(task).context("Failed to serialize task for storage")?;
+                let cid = offload
+                    .backend
+                    .upload(task_bytes)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("storage offload upload failed: {e}"))?;
+
+                // Build a slim task with the CID and cleared content
+                let mut slim = task.clone();
+                slim.payload_cid = Some(cid);
+                slim.message = Message {
+                    role: task.message.role.clone(),
+                    parts: vec![],
+                };
+                if let Some(ref mut result) = slim.result {
+                    result.parts.clear();
+                }
+
+                let slim_envelope = self.maybe_encrypt_task(&slim, recipient_card)?;
+                return serde_json::to_vec(&slim_envelope)
+                    .context("Failed to serialize slim envelope");
+            }
+        }
+
+        Ok(payload)
     }
 
     /// Encrypt a task if both sides have encryption identities.
@@ -563,6 +672,15 @@ mod tests {
                 .push(payload.clone());
             if let Some(subs) = state.subscribers.get_mut(topic) {
                 subs.retain(|tx| tx.try_send(payload.clone()).is_ok());
+            }
+        }
+    }
+
+    impl Clone for MockTransport {
+        fn clone(&self) -> Self {
+            Self {
+                published: self.published.clone(),
+                state: self.state.clone(),
             }
         }
     }
@@ -749,5 +867,163 @@ mod tests {
         let node = WakuA2ANode::new("test", "test agent", vec![], transport);
         let result = node.send_in_session("nonexistent", "hello").await;
         assert!(result.is_err());
+    }
+
+    // --- Storage offload tests ---
+
+    struct MockStorage {
+        store: Mutex<HashMap<String, Vec<u8>>>,
+        next_id: Mutex<u64>,
+    }
+
+    impl MockStorage {
+        fn new() -> Self {
+            Self {
+                store: Mutex::new(HashMap::new()),
+                next_id: Mutex::new(0),
+            }
+        }
+
+        fn len(&self) -> usize {
+            self.store.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait]
+    impl StorageBackend for MockStorage {
+        async fn upload(
+            &self,
+            data: Vec<u8>,
+        ) -> Result<String, logos_messaging_a2a_storage::StorageError> {
+            let mut id = self.next_id.lock().unwrap();
+            let cid = format!("zMock{}", *id);
+            *id += 1;
+            self.store.lock().unwrap().insert(cid.clone(), data);
+            Ok(cid)
+        }
+
+        async fn download(
+            &self,
+            cid: &str,
+        ) -> Result<Vec<u8>, logos_messaging_a2a_storage::StorageError> {
+            self.store
+                .lock()
+                .unwrap()
+                .get(cid)
+                .cloned()
+                .ok_or_else(|| logos_messaging_a2a_storage::StorageError::Api {
+                    status: 404,
+                    body: format!("CID not found: {}", cid),
+                })
+        }
+    }
+
+    fn fast_config() -> ChannelConfig {
+        ChannelConfig {
+            ack_timeout: std::time::Duration::from_millis(1),
+            max_retries: 0,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_small_payload_inline() {
+        let transport = MockTransport::new();
+        let published = transport.published.clone();
+        let storage = Arc::new(MockStorage::new());
+
+        let node = WakuA2ANode::with_config(
+            "test",
+            "test agent",
+            vec![],
+            transport,
+            fast_config(),
+        )
+        .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 65_536));
+
+        let task = Task::new(node.pubkey(), "02deadbeef", "small message");
+        node.send_task(&task).await.unwrap();
+
+        // Payload was sent (published to transport)
+        assert!(!published.lock().unwrap().is_empty());
+        // Storage should NOT have been used
+        assert_eq!(storage.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_large_payload_offloaded() {
+        let transport = MockTransport::new();
+        let storage = Arc::new(MockStorage::new());
+
+        // Very low threshold to force offloading
+        let node = WakuA2ANode::with_config(
+            "test",
+            "test agent",
+            vec![],
+            transport,
+            fast_config(),
+        )
+        .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 10));
+
+        let task = Task::new(
+            node.pubkey(),
+            "02deadbeef",
+            "this message exceeds the tiny threshold",
+        );
+        node.send_task(&task).await.unwrap();
+
+        // Storage should have been used (one upload)
+        assert_eq!(storage.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_offload_roundtrip() {
+        let transport = MockTransport::new();
+        let storage = Arc::new(MockStorage::new());
+        let threshold = 10;
+
+        // Create receiver first to capture its pubkey
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_storage_offload(StorageOffloadConfig::with_threshold(
+            storage.clone(),
+            threshold,
+        ));
+        let recipient_pubkey = receiver.pubkey().to_string();
+
+        // Lazy-subscribe so the receiver listens on its task topic
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        // Create sender on the same shared transport
+        let sender = WakuA2ANode::with_config(
+            "sender",
+            "sender agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_storage_offload(StorageOffloadConfig::with_threshold(
+            storage.clone(),
+            threshold,
+        ));
+
+        let large_text = "A".repeat(1000);
+        let task = Task::new(sender.pubkey(), &recipient_pubkey, &large_text);
+        sender.send_task(&task).await.unwrap();
+
+        // Verify payload was offloaded to storage
+        assert_eq!(storage.len(), 1);
+
+        // Receiver polls — should auto-fetch from storage and return the full task
+        let received = receiver.poll_tasks().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].text(), Some(large_text.as_str()));
+        // The reconstructed task should NOT have a payload_cid (it's the original)
+        assert!(received[0].payload_cid.is_none());
     }
 }
