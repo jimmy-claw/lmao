@@ -359,6 +359,7 @@ module/
 - [x] `LogosCoreStorageBackend` — native storage_module IPC backend
 - [x] Logos Core e2e demo (stub + real SDK support)
 - [x] libwaku FFI —  via  feature (no separate nwaku process)
+- [x] CID-based large payload offloading to Logos Storage
 - [ ] Full SDS protocol — bloom filters, causal ordering, batch ACK
 - [ ] Logos Chat SDK — Double Ratchet for forward secrecy
 - [ ] LEZ agent registry — on-chain AgentCards via SPELbook

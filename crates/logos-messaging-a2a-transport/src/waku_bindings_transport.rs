@@ -72,14 +72,12 @@ impl NativeWakuTransport {
         let senders_clone = senders.clone();
         node.set_event_callback(move |response: LibwakuResponse| {
             if let LibwakuResponse::Success(Some(json)) = response {
-                if let Ok(event) = serde_json::from_str::<WakuEvent>(&json) {
-                    if let WakuEvent::WakuMessage(msg_event) = event {
-                        let content_topic = msg_event.waku_message.content_topic.to_string();
-                        let payload = msg_event.waku_message.payload.clone();
-                        if let Ok(senders) = senders_clone.lock() {
-                            if let Some(tx) = senders.get(&content_topic) {
-                                let _ = tx.try_send(payload);
-                            }
+                if let Ok(WakuEvent::WakuMessage(msg_event)) = serde_json::from_str::<WakuEvent>(&json) {
+                    let content_topic = msg_event.waku_message.content_topic.to_string();
+                    let payload = msg_event.waku_message.payload.clone();
+                    if let Ok(senders) = senders_clone.lock() {
+                        if let Some(tx) = senders.get(&content_topic) {
+                            let _ = tx.try_send(payload);
                         }
                     }
                 }

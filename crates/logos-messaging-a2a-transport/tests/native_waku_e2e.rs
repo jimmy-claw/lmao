@@ -44,7 +44,10 @@ mod native_waku_tests {
 
         // B subscribes to a topic
         let topic = "test-agent-123";
-        let mut rx = node_b.subscribe(topic).await.expect("subscribe should work");
+        let mut rx = node_b
+            .subscribe(topic)
+            .await
+            .expect("subscribe should work");
 
         // Give nodes a moment to establish relay mesh
         tokio::time::sleep(Duration::from_millis(500)).await;
