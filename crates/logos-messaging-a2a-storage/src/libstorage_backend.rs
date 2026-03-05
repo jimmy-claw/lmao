@@ -115,3 +115,83 @@ impl StorageBackend for LibstorageBackend {
         Ok(data)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::StorageBackend;
+    use std::sync::atomic::{AtomicU16, Ordering};
+
+    /// Allocate unique discovery ports so parallel tests don't collide.
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(19100);
+
+    /// Helper: create a [`LibstorageBackend`] with a unique discovery port.
+    async fn make_backend() -> (LibstorageBackend, tempfile::TempDir) {
+        let port = NEXT_PORT.fetch_add(1, Ordering::Relaxed);
+        let tmp = tempfile::tempdir().expect("failed to create temp dir");
+        let backend = LibstorageBackend::with_config(tmp.path(), Some(port), None)
+            .await
+            .expect("failed to create LibstorageBackend");
+        (backend, tmp)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_libstorage_store_and_retrieve() {
+        let (backend, _tmp) = make_backend().await;
+
+        let data = b"hello libstorage roundtrip".to_vec();
+        let cid = backend.upload(data.clone()).await.expect("upload failed");
+        assert!(!cid.is_empty(), "CID should not be empty");
+
+        let downloaded = backend.download(&cid).await.expect("download failed");
+        assert_eq!(data, downloaded);
+
+        backend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_libstorage_store_empty() {
+        let (backend, _tmp) = make_backend().await;
+
+        let data = Vec::new();
+        let result = backend.upload(data).await;
+        // Storing empty bytes should either succeed or return an error — it must not panic.
+        match result {
+            Ok(cid) => assert!(!cid.is_empty()),
+            Err(_) => { /* acceptable: backend may reject empty uploads */ }
+        }
+
+        backend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_libstorage_retrieve_unknown_cid() {
+        let (backend, _tmp) = make_backend().await;
+
+        let result = backend.download("zNonexistentCid123456789").await;
+        assert!(result.is_err(), "downloading an unknown CID should fail");
+
+        backend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_libstorage_multiple_stores() {
+        let (backend, _tmp) = make_backend().await;
+
+        let data_a = b"payload alpha".to_vec();
+        let data_b = b"payload beta".to_vec();
+
+        let cid_a = backend.upload(data_a.clone()).await.expect("upload A failed");
+        let cid_b = backend.upload(data_b.clone()).await.expect("upload B failed");
+
+        assert_ne!(cid_a, cid_b, "different payloads should yield different CIDs");
+
+        let downloaded_a = backend.download(&cid_a).await.expect("download A failed");
+        let downloaded_b = backend.download(&cid_b).await.expect("download B failed");
+
+        assert_eq!(data_a, downloaded_a);
+        assert_eq!(data_b, downloaded_b);
+
+        backend.shutdown().await.expect("shutdown failed");
+    }
+}
