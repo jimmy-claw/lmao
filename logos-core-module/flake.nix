@@ -16,7 +16,13 @@
         pname = "lmao-ffi";
         version = "0.1.0";
         src = ./..;
-        cargoLock.lockFile = ./../Cargo.lock;
+        cargoLock = {
+          lockFile = ./../Cargo.lock;
+          outputHashes = {
+            "waku-bindings-1.0.0" = "sha256-8UeWxJ0FHJOx57A8qtnhB8znFqmA80z1jQjgrvUMQEs=";
+            "waku-sys-1.0.0" = "sha256-8UeWxJ0FHJOx57A8qtnhB8znFqmA80z1jQjgrvUMQEs=";
+          };
+        };
         buildAndTestSubdir = "crates/lmao-ffi";
         # We only need the cdylib, skip tests (they need network).
         doCheck = false;
@@ -26,17 +32,11 @@
         '';
       };
 
-      # Build the C++ IComponent module via logos-module-builder.
-      module = logos-module-builder.lib.mkLogosModule {
-        src = ./.;
-        configFile = ./module.yaml;
-      };
     in
     {
       packages.${system} = {
         # The main module library (C++ IComponent plugin).
-        lib = module.packages.${system}.default or module.packages.${system}.lib or
-          (pkgs.stdenv.mkDerivation {
+        lib = pkgs.stdenv.mkDerivation {
             pname = "lmao-core-module";
             version = "0.1.0";
             src = ./.;
@@ -50,7 +50,7 @@
             cmakeFlags = [
               "-DLMAO_FFI_LIB=${lmao-ffi}/lib"
             ];
-          });
+          };
 
         # The Rust FFI library (for standalone use).
         ffi = lmao-ffi;
