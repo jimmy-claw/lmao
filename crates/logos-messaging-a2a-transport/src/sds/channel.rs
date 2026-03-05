@@ -128,7 +128,7 @@ impl<T: Transport> MessageChannel<T> {
             outgoing_buffer: Mutex::new(Vec::new()),
             incoming_buffer: Mutex::new(Vec::new()),
             #[allow(dead_code)]
-    possible_acks: Mutex::new(std::collections::HashMap::new()),
+            possible_acks: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -429,9 +429,7 @@ impl<T: Transport> MessageChannel<T> {
 
         outgoing.retain(|msg| {
             if remote_bloom.probably_contains(&msg.message_id) {
-                let count = possible_acks
-                    .entry(msg.message_id.clone())
-                    .or_insert(0);
+                let count = possible_acks.entry(msg.message_id.clone()).or_insert(0);
                 *count += 1;
                 if *count >= self.config.possible_acks_threshold {
                     // Implicitly acknowledged — remove from outgoing buffer

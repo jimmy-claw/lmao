@@ -53,6 +53,10 @@ pub struct Task {
     pub message: Message,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Message>,
+    /// Session ID for multi-turn conversations. Tasks with the same
+    /// session_id belong to the same conversation thread.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
     /// CID of a large payload offloaded to Logos Storage (Codex).
     /// When present, the actual data can be fetched via a `StorageBackend`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -89,7 +93,15 @@ impl Task {
             },
             result: None,
             payload_cid: None,
+            session_id: None,
         }
+    }
+
+    /// Create a task within a session.
+    pub fn new_in_session(from: &str, to: &str, text: &str, session_id: &str) -> Self {
+        let mut task = Self::new(from, to, text);
+        task.session_id = Some(session_id.to_string());
+        task
     }
 
     pub fn respond(&self, text: &str) -> Self {
@@ -106,6 +118,7 @@ impl Task {
                 }],
             }),
             payload_cid: None,
+            session_id: self.session_id.clone(),
         }
     }
 

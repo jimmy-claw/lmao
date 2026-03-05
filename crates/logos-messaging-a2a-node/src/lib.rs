@@ -1,10 +1,38 @@
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
+pub use logos_messaging_a2a_core::Task as TaskType;
 use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, Task};
 use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
 use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+
+/// A multi-turn conversation session between two agents.
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub id: String,
+    pub peer: String,
+    pub task_ids: Vec<String>,
+    pub created_at: u64,
+}
+
+impl Session {
+    fn new(peer: &str) -> Self {
+        let id = uuid::Uuid::new_v4().to_string();
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Self {
+            id,
+            peer: peer.to_string(),
+            task_ids: Vec::new(),
+            created_at,
+        }
+    }
+}
 
 /// A2A node: announce, discover, send/receive tasks over Waku.
 ///
@@ -18,6 +46,8 @@ pub struct WakuA2ANode<T: Transport> {
     identity: Option<AgentIdentity>,
     /// Persistent subscription to this node's task topic (lazy-initialized).
     task_rx: tokio::sync::Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
+    /// Active conversation sessions.
+    sessions: std::sync::Mutex<HashMap<String, Session>>,
 }
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -50,6 +80,7 @@ impl<T: Transport> WakuA2ANode<T> {
             signing_key,
             identity: None,
             task_rx: tokio::sync::Mutex::new(None),
+            sessions: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -90,6 +121,7 @@ impl<T: Transport> WakuA2ANode<T> {
             signing_key,
             identity: Some(identity),
             task_rx: tokio::sync::Mutex::new(None),
+            sessions: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -127,6 +159,7 @@ impl<T: Transport> WakuA2ANode<T> {
             signing_key,
             identity: None,
             task_rx: tokio::sync::Mutex::new(None),
+            sessions: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -166,6 +199,7 @@ impl<T: Transport> WakuA2ANode<T> {
             signing_key,
             identity: None,
             task_rx: tokio::sync::Mutex::new(None),
+            sessions: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -207,7 +241,11 @@ impl<T: Transport> WakuA2ANode<T> {
 
     /// Discover agents by subscribing to the discovery topic and draining messages.
     pub async fn discover(&self) -> Result<Vec<AgentCard>> {
-        let mut rx = self.channel.transport().subscribe(topics::DISCOVERY).await?;
+        let mut rx = self
+            .channel
+            .transport()
+            .subscribe(topics::DISCOVERY)
+            .await?;
 
         let mut cards = Vec::new();
         while let Ok(msg) = rx.try_recv() {
@@ -218,7 +256,11 @@ impl<T: Transport> WakuA2ANode<T> {
             }
         }
 
-        let _ = self.channel.transport().unsubscribe(topics::DISCOVERY).await;
+        let _ = self
+            .channel
+            .transport()
+            .unsubscribe(topics::DISCOVERY)
+            .await;
         Ok(cards)
     }
 
@@ -253,6 +295,44 @@ impl<T: Transport> WakuA2ANode<T> {
             eprintln!("[node] Task {} sent but no ACK received", task.id);
         }
         Ok(acked)
+    }
+
+    /// Create a new conversation session with a peer.
+    pub fn create_session(&self, peer_pubkey: &str) -> Session {
+        let session = Session::new(peer_pubkey);
+        let id = session.id.clone();
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(id.clone(), session.clone());
+        session
+    }
+
+    /// Get a session by ID.
+    pub fn get_session(&self, session_id: &str) -> Option<Session> {
+        self.sessions.lock().unwrap().get(session_id).cloned()
+    }
+
+    /// List all active sessions.
+    pub fn list_sessions(&self) -> Vec<Session> {
+        self.sessions.lock().unwrap().values().cloned().collect()
+    }
+
+    /// Send a text message within an existing session.
+    pub async fn send_in_session(&self, session_id: &str, text: &str) -> Result<Task> {
+        let peer = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions
+                .get(session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session {} not found", session_id))?;
+            session.peer.clone()
+        };
+        let task = Task::new_in_session(self.pubkey(), &peer, text, session_id);
+        self.send_task(&task).await?;
+        if let Some(s) = self.sessions.lock().unwrap().get_mut(session_id) {
+            s.task_ids.push(task.id.clone());
+        }
+        Ok(task)
     }
 
     /// Poll for incoming tasks addressed to this agent.
@@ -305,8 +385,7 @@ impl<T: Transport> WakuA2ANode<T> {
                 // Backward compat: try raw A2AEnvelope (non-SDS peers)
                 if let Ok(envelope) = serde_json::from_slice::<A2AEnvelope>(&msg) {
                     // Dedup via bloom filter using a hash of the raw bytes
-                    let dedup_id =
-                        logos_messaging_a2a_transport::sds::compute_message_id(&msg);
+                    let dedup_id = logos_messaging_a2a_transport::sds::compute_message_id(&msg);
                     if self.channel.is_duplicate(&dedup_id) {
                         continue;
                     }
@@ -315,6 +394,18 @@ impl<T: Transport> WakuA2ANode<T> {
                     if let Some(task) = self.extract_task_from_envelope(envelope).await? {
                         tasks.push(task);
                     }
+                }
+            }
+        }
+        // Track incoming tasks in their sessions
+        for task in &tasks {
+            if let Some(ref sid) = task.session_id {
+                let mut sessions = self.sessions.lock().unwrap();
+                let session = sessions
+                    .entry(sid.clone())
+                    .or_insert_with(|| Session::new(&task.from));
+                if !session.task_ids.contains(&task.id) {
+                    session.task_ids.push(task.id.clone());
                 }
             }
         }
@@ -602,5 +693,61 @@ mod tests {
         assert_eq!(node.channel().sender_id(), node.pubkey());
         assert_eq!(node.channel().outgoing_pending(), 0);
         assert_eq!(node.channel().incoming_pending(), 0);
+    }
+
+    #[test]
+    fn test_create_session() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test agent", vec![], transport);
+        let session = node.create_session("02deadbeef");
+        assert_eq!(session.peer, "02deadbeef");
+        assert!(session.task_ids.is_empty());
+        assert!(!session.id.is_empty());
+    }
+
+    #[test]
+    fn test_list_sessions() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test agent", vec![], transport);
+        assert!(node.list_sessions().is_empty());
+        node.create_session("02aa");
+        node.create_session("02bb");
+        assert_eq!(node.list_sessions().len(), 2);
+    }
+
+    #[test]
+    fn test_get_session() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test agent", vec![], transport);
+        let session = node.create_session("02aa");
+        let found = node.get_session(&session.id);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().peer, "02aa");
+        assert!(node.get_session("nonexistent").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_send_in_session() {
+        let transport = MockTransport::new();
+        let published = transport.published.clone();
+        let node = WakuA2ANode::new("test", "test agent", vec![], transport);
+        let session = node.create_session("02deadbeef");
+        let task = node.send_in_session(&session.id, "hello").await.unwrap();
+        assert_eq!(task.session_id, Some(session.id.clone()));
+        assert_eq!(task.to, "02deadbeef");
+        assert!(!published.lock().unwrap().is_empty());
+
+        // Task should be tracked in session
+        let updated = node.get_session(&session.id).unwrap();
+        assert_eq!(updated.task_ids.len(), 1);
+        assert_eq!(updated.task_ids[0], task.id);
+    }
+
+    #[tokio::test]
+    async fn test_send_in_nonexistent_session() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test agent", vec![], transport);
+        let result = node.send_in_session("nonexistent", "hello").await;
+        assert!(result.is_err());
     }
 }
