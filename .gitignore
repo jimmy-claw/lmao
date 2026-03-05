@@ -1,5 +1,4 @@
 /target
-Cargo.lock
 /module/build/
 demos/logos-core-e2e/target/
 dist/
