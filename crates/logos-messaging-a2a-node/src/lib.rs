@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 pub use logos_messaging_a2a_core::Task as TaskType;
 use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, Message, Task};
-use logos_messaging_a2a_storage::StorageBackend;
 use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
+use logos_messaging_a2a_storage::StorageBackend;
 use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
 use std::collections::HashMap;
@@ -506,9 +506,7 @@ impl<T: Transport> WakuA2ANode<T> {
                     .context("Failed to deserialize offloaded task")?;
                 return Ok(Some(original));
             }
-            eprintln!(
-                "[node] Task has payload_cid but no storage backend configured"
-            );
+            eprintln!("[node] Task has payload_cid but no storage backend configured");
         }
         Ok(Some(task))
     }
@@ -906,15 +904,12 @@ mod tests {
             &self,
             cid: &str,
         ) -> Result<Vec<u8>, logos_messaging_a2a_storage::StorageError> {
-            self.store
-                .lock()
-                .unwrap()
-                .get(cid)
-                .cloned()
-                .ok_or_else(|| logos_messaging_a2a_storage::StorageError::Api {
+            self.store.lock().unwrap().get(cid).cloned().ok_or_else(|| {
+                logos_messaging_a2a_storage::StorageError::Api {
                     status: 404,
                     body: format!("CID not found: {}", cid),
-                })
+                }
+            })
         }
     }
 
@@ -932,14 +927,11 @@ mod tests {
         let published = transport.published.clone();
         let storage = Arc::new(MockStorage::new());
 
-        let node = WakuA2ANode::with_config(
-            "test",
-            "test agent",
-            vec![],
-            transport,
-            fast_config(),
-        )
-        .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 65_536));
+        let node = WakuA2ANode::with_config("test", "test agent", vec![], transport, fast_config())
+            .with_storage_offload(StorageOffloadConfig::with_threshold(
+                storage.clone(),
+                65_536,
+            ));
 
         let task = Task::new(node.pubkey(), "02deadbeef", "small message");
         node.send_task(&task).await.unwrap();
@@ -956,14 +948,8 @@ mod tests {
         let storage = Arc::new(MockStorage::new());
 
         // Very low threshold to force offloading
-        let node = WakuA2ANode::with_config(
-            "test",
-            "test agent",
-            vec![],
-            transport,
-            fast_config(),
-        )
-        .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 10));
+        let node = WakuA2ANode::with_config("test", "test agent", vec![], transport, fast_config())
+            .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 10));
 
         let task = Task::new(
             node.pubkey(),
@@ -1046,12 +1032,8 @@ mod tests {
             vec!["text".into()],
             transport.clone(),
         );
-        let bob = WakuA2ANode::new_encrypted(
-            "bob",
-            "bob agent",
-            vec!["text".into()],
-            transport.clone(),
-        );
+        let bob =
+            WakuA2ANode::new_encrypted("bob", "bob agent", vec!["text".into()], transport.clone());
         let bob_pubkey = bob.pubkey().to_string();
 
         // Bob subscribes to his task topic
@@ -1072,33 +1054,36 @@ mod tests {
     async fn test_encrypted_wrong_recipient_cannot_decrypt() {
         let transport = MockTransport::new();
 
-        let alice = WakuA2ANode::new_encrypted(
-            "alice", "alice", vec![], transport.clone(),
-        );
-        let bob = WakuA2ANode::new_encrypted(
-            "bob", "bob", vec![], transport.clone(),
-        );
-        let eve = WakuA2ANode::new_encrypted(
-            "eve", "eve", vec![], transport.clone(),
-        );
+        let alice = WakuA2ANode::new_encrypted("alice", "alice", vec![], transport.clone());
+        let bob = WakuA2ANode::new_encrypted("bob", "bob", vec![], transport.clone());
+        let eve = WakuA2ANode::new_encrypted("eve", "eve", vec![], transport.clone());
 
         // Eve listens on Bob's topic (she shouldn't be able to decrypt)
         // We test at the decrypt_task level directly
         let task = Task::new(alice.pubkey(), bob.pubkey(), "for bob only");
         let their_pubkey = logos_messaging_a2a_crypto::AgentIdentity::parse_public_key(
             &bob.card.intro_bundle.as_ref().unwrap().agent_pubkey,
-        ).unwrap();
+        )
+        .unwrap();
         let session_key = alice.identity().unwrap().shared_key(&their_pubkey);
         let task_json = serde_json::to_vec(&task).unwrap();
         let encrypted = session_key.encrypt(&task_json).unwrap();
 
         // Eve tries to decrypt with her own identity — should fail
-        let eve_result = eve.identity().unwrap()
-            .shared_key(&logos_messaging_a2a_crypto::AgentIdentity::parse_public_key(
-                &alice.card.intro_bundle.as_ref().unwrap().agent_pubkey,
-            ).unwrap())
+        let eve_result = eve
+            .identity()
+            .unwrap()
+            .shared_key(
+                &logos_messaging_a2a_crypto::AgentIdentity::parse_public_key(
+                    &alice.card.intro_bundle.as_ref().unwrap().agent_pubkey,
+                )
+                .unwrap(),
+            )
             .decrypt(&encrypted);
-        assert!(eve_result.is_err(), "Eve should not be able to decrypt Bob's message");
+        assert!(
+            eve_result.is_err(),
+            "Eve should not be able to decrypt Bob's message"
+        );
     }
 
     #[tokio::test]
@@ -1106,9 +1091,8 @@ mod tests {
         let transport = MockTransport::new();
         let published = transport.published.clone();
 
-        let node = WakuA2ANode::with_config(
-            "responder", "responder", vec![], transport, fast_config(),
-        );
+        let node =
+            WakuA2ANode::with_config("responder", "responder", vec![], transport, fast_config());
 
         let incoming_task = Task::new("02sender", node.pubkey(), "do something");
         node.respond(&incoming_task, "done!").await.unwrap();
@@ -1140,9 +1124,7 @@ mod tests {
     async fn test_send_text_convenience() {
         let transport = MockTransport::new();
         let published = transport.published.clone();
-        let node = WakuA2ANode::with_config(
-            "sender", "sender", vec![], transport, fast_config(),
-        );
+        let node = WakuA2ANode::with_config("sender", "sender", vec![], transport, fast_config());
 
         let task = node.send_text("02recipient", "hello!").await.unwrap();
         assert_eq!(task.from, node.pubkey());
