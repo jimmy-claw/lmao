@@ -7,7 +7,7 @@ use logos_messaging_a2a_execution::{AgentId, ExecutionBackend};
 use logos_messaging_a2a_storage::StorageBackend;
 use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -76,7 +76,7 @@ impl StorageOffloadConfig {
 /// - **Receiving**: if `required_amount > 0`, incoming tasks without a valid
 ///   `payment_tx` (or with insufficient `payment_amount`) are rejected.
 pub struct PaymentConfig {
-    /// Execution backend used for `pay()` / `balance()` calls.
+    /// Execution backend used for `pay()` / `balance()` / `verify_transfer()` calls.
     pub backend: Arc<dyn ExecutionBackend>,
     /// Minimum payment required to accept an incoming task. 0 = no requirement.
     pub required_amount: u64,
@@ -84,6 +84,12 @@ pub struct PaymentConfig {
     pub auto_pay: bool,
     /// Amount to auto-pay per outgoing task (only used when `auto_pay` is true).
     pub auto_pay_amount: u64,
+    /// When true, verify payment tx hashes on-chain via `backend.verify_transfer()`.
+    /// When false, only check that `payment_tx` and `payment_amount` are present.
+    pub verify_on_chain: bool,
+    /// Expected recipient address for on-chain verification (lowercase hex with 0x).
+    /// If empty, recipient is not checked (only amount is validated).
+    pub receiving_account: String,
 }
 
 /// A2A node: announce, discover, send/receive tasks over Waku.
@@ -104,6 +110,8 @@ pub struct WakuA2ANode<T: Transport> {
     storage_offload: Option<StorageOffloadConfig>,
     /// Optional x402-style payment configuration.
     payment: Option<PaymentConfig>,
+    /// Set of already-seen payment tx hashes to prevent replay attacks.
+    seen_tx_hashes: std::sync::Mutex<HashSet<String>>,
 }
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -139,6 +147,7 @@ impl<T: Transport> WakuA2ANode<T> {
             sessions: std::sync::Mutex::new(HashMap::new()),
             storage_offload: None,
             payment: None,
+            seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -182,6 +191,7 @@ impl<T: Transport> WakuA2ANode<T> {
             sessions: std::sync::Mutex::new(HashMap::new()),
             storage_offload: None,
             payment: None,
+            seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -222,6 +232,7 @@ impl<T: Transport> WakuA2ANode<T> {
             sessions: std::sync::Mutex::new(HashMap::new()),
             storage_offload: None,
             payment: None,
+            seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -264,6 +275,7 @@ impl<T: Transport> WakuA2ANode<T> {
             sessions: std::sync::Mutex::new(HashMap::new()),
             storage_offload: None,
             payment: None,
+            seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -484,7 +496,14 @@ impl<T: Transport> WakuA2ANode<T> {
             }
         }
         // Reject tasks that don't meet the payment requirement
-        tasks.retain(|task| self.verify_payment(task));
+        // Verify payments (async — can't use retain)
+        let mut verified_tasks = Vec::new();
+        for task in tasks {
+            if self.verify_payment(&task).await {
+                verified_tasks.push(task);
+            }
+        }
+        let tasks = verified_tasks;
 
         // Track incoming tasks in their sessions
         for task in &tasks {
@@ -609,25 +628,95 @@ impl<T: Transport> WakuA2ANode<T> {
     }
 
     /// Check that an incoming task satisfies the payment requirement.
+    ///
+    /// When `verify_on_chain` is true, queries the chain via
+    /// `backend.verify_transfer()` to confirm:
+    /// 1. The tx hash exists and succeeded
+    /// 2. The transfer amount meets the minimum requirement
+    /// 3. The recipient matches `receiving_account` (if configured)
+    /// 4. The tx hash hasn't been seen before (replay protection)
+    ///
     /// Returns `true` if the task is accepted, `false` if rejected.
-    fn verify_payment(&self, task: &Task) -> bool {
-        if let Some(ref pay_cfg) = self.payment {
-            if pay_cfg.required_amount > 0 {
-                match (&task.payment_tx, task.payment_amount) {
-                    (Some(_tx), Some(amount)) if amount >= pay_cfg.required_amount => true,
-                    _ => {
-                        eprintln!(
-                            "[node] Rejecting task {} — insufficient payment (need {}, got {:?})",
-                            task.id, pay_cfg.required_amount, task.payment_amount
-                        );
-                        false
-                    }
+    async fn verify_payment(&self, task: &Task) -> bool {
+        let pay_cfg = match &self.payment {
+            Some(cfg) => cfg,
+            None => return true,
+        };
+
+        if pay_cfg.required_amount == 0 {
+            return true;
+        }
+
+        let tx_hash = match &task.payment_tx {
+            Some(tx) if !tx.is_empty() => tx.clone(),
+            _ => {
+                eprintln!(
+                    "[node] Rejecting task {} — no payment tx hash provided (need {} tokens)",
+                    task.id, pay_cfg.required_amount
+                );
+                return false;
+            }
+        };
+
+        // Check for replayed tx hashes
+        {
+            let seen = self.seen_tx_hashes.lock().unwrap();
+            if seen.contains(&tx_hash) {
+                eprintln!(
+                    "[node] Rejecting task {} — replayed payment tx {}",
+                    task.id, tx_hash
+                );
+                return false;
+            }
+        }
+
+        if !pay_cfg.verify_on_chain {
+            // Offline check: trust the claimed amount
+            match task.payment_amount {
+                Some(amount) if amount >= pay_cfg.required_amount => {
+                    self.seen_tx_hashes.lock().unwrap().insert(tx_hash);
+                    true
                 }
-            } else {
-                true
+                _ => {
+                    eprintln!(
+                        "[node] Rejecting task {} — insufficient payment (need {}, got {:?})",
+                        task.id, pay_cfg.required_amount, task.payment_amount
+                    );
+                    false
+                }
             }
         } else {
-            true
+            // On-chain verification
+            match pay_cfg.backend.verify_transfer(&tx_hash).await {
+                Ok(details) => {
+                    if details.amount < pay_cfg.required_amount {
+                        eprintln!(
+                            "[node] Rejecting task {} — on-chain amount {} < required {}",
+                            task.id, details.amount, pay_cfg.required_amount
+                        );
+                        return false;
+                    }
+                    if !pay_cfg.receiving_account.is_empty()
+                        && details.to.to_lowercase() != pay_cfg.receiving_account.to_lowercase()
+                    {
+                        eprintln!(
+                            "[node] Rejecting task {} — payment sent to {} but expected {}",
+                            task.id, details.to, pay_cfg.receiving_account
+                        );
+                        return false;
+                    }
+                    // Mark as seen to prevent replay
+                    self.seen_tx_hashes.lock().unwrap().insert(tx_hash);
+                    true
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[node] Rejecting task {} — on-chain verification failed: {}",
+                        task.id, e
+                    );
+                    false
+                }
+            }
         }
     }
 
@@ -721,7 +810,6 @@ fn rand_core() -> k256::elliptic_curve::rand_core::OsRng {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     struct MockTransport {
@@ -1099,6 +1187,8 @@ mod tests {
 
     // --- x402 payment tests ---
 
+    use logos_messaging_a2a_execution::TransferDetails;
+
     struct MockExecutionBackend;
 
     #[async_trait]
@@ -1118,6 +1208,14 @@ mod tests {
         }
         async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
             Ok(1000)
+        }
+        async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+            Ok(TransferDetails {
+                from: "0xsender".into(),
+                to: "0xrecipient".into(),
+                amount: 100,
+                block_number: 1,
+            })
         }
     }
 
@@ -1152,6 +1250,10 @@ mod tests {
             required_amount: 50,
             auto_pay: false,
             auto_pay_amount: 0,
+
+            verify_on_chain: false,
+
+            receiving_account: String::new(),
         });
         let recipient_pubkey = receiver.pubkey().to_string();
 
@@ -1193,6 +1295,10 @@ mod tests {
             required_amount: 100,
             auto_pay: false,
             auto_pay_amount: 0,
+
+            verify_on_chain: false,
+
+            receiving_account: String::new(),
         });
         let recipient_pubkey = receiver.pubkey().to_string();
         let _ = receiver.poll_tasks().await.unwrap();
@@ -1210,6 +1316,10 @@ mod tests {
             required_amount: 0,
             auto_pay: true,
             auto_pay_amount: 100,
+
+            verify_on_chain: false,
+
+            receiving_account: String::new(),
         });
 
         let task = Task::new(sender.pubkey(), &recipient_pubkey, "paid task");
@@ -1221,5 +1331,265 @@ mod tests {
         assert!(received[0].payment_tx.is_some(), "should have TX hash");
         assert_eq!(received[0].payment_amount, Some(100));
         assert_eq!(received[0].text(), Some("paid task"));
+    }
+
+    /// Mock backend that returns configurable transfer details for verify_transfer.
+    struct VerifyingBackend {
+        details: TransferDetails,
+    }
+
+    #[async_trait]
+    impl ExecutionBackend for VerifyingBackend {
+        async fn register_agent(
+            &self,
+            _card: &AgentCard,
+        ) -> anyhow::Result<logos_messaging_a2a_execution::TxHash> {
+            Ok(logos_messaging_a2a_execution::TxHash([0; 32]))
+        }
+        async fn pay(
+            &self,
+            _to: &AgentId,
+            _amount: u64,
+        ) -> anyhow::Result<logos_messaging_a2a_execution::TxHash> {
+            Ok(logos_messaging_a2a_execution::TxHash([0; 32]))
+        }
+        async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+            Ok(0)
+        }
+        async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+            Ok(self.details.clone())
+        }
+    }
+
+    /// Mock backend where verify_transfer always fails.
+    struct FailingVerifyBackend;
+
+    #[async_trait]
+    impl ExecutionBackend for FailingVerifyBackend {
+        async fn register_agent(
+            &self,
+            _card: &AgentCard,
+        ) -> anyhow::Result<logos_messaging_a2a_execution::TxHash> {
+            Ok(logos_messaging_a2a_execution::TxHash([0; 32]))
+        }
+        async fn pay(
+            &self,
+            _to: &AgentId,
+            _amount: u64,
+        ) -> anyhow::Result<logos_messaging_a2a_execution::TxHash> {
+            Ok(logos_messaging_a2a_execution::TxHash([0; 32]))
+        }
+        async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+            Ok(0)
+        }
+        async fn verify_transfer(&self, tx_hash: &str) -> anyhow::Result<TransferDetails> {
+            anyhow::bail!("Transaction {} not found", tx_hash)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_replay_protection_rejects_duplicate_tx() {
+        let transport = MockTransport::new();
+        let backend: Arc<dyn ExecutionBackend> = Arc::new(VerifyingBackend {
+            details: TransferDetails {
+                from: "0xsender".into(),
+                to: "0xrecipient".into(),
+                amount: 100,
+                block_number: 1,
+            },
+        });
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend: backend.clone(),
+            required_amount: 50,
+            auto_pay: false,
+            auto_pay_amount: 0,
+            verify_on_chain: false,
+            receiving_account: String::new(),
+        });
+        let recipient_pubkey = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender = WakuA2ANode::with_config(
+            "sender",
+            "sender agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+
+        // First task with tx hash — accepted
+        let mut task1 = Task::new(sender.pubkey(), &recipient_pubkey, "first payment");
+        task1.payment_tx = Some("0xabc123".to_string());
+        task1.payment_amount = Some(100);
+        sender.send_task(&task1).await.unwrap();
+        let received = receiver.poll_tasks().await.unwrap();
+        assert_eq!(received.len(), 1, "first use of tx should be accepted");
+
+        // Same tx hash again — rejected (replay)
+        let mut task2 = Task::new(sender.pubkey(), &recipient_pubkey, "replay attempt");
+        task2.payment_tx = Some("0xabc123".to_string());
+        task2.payment_amount = Some(100);
+        sender.send_task(&task2).await.unwrap();
+        let received = receiver.poll_tasks().await.unwrap();
+        assert!(received.is_empty(), "replayed tx should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_on_chain_verify_rejects_insufficient_amount() {
+        let transport = MockTransport::new();
+        let backend: Arc<dyn ExecutionBackend> = Arc::new(VerifyingBackend {
+            details: TransferDetails {
+                from: "0xsender".into(),
+                to: "0xrecipient".into(),
+                amount: 10, // less than required
+                block_number: 1,
+            },
+        });
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend,
+            required_amount: 50,
+            auto_pay: false,
+            auto_pay_amount: 0,
+            verify_on_chain: true,
+            receiving_account: String::new(),
+        });
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let mut task = Task::new(sender.pubkey(), &rpk, "underpaid");
+        task.payment_tx = Some("0xunderpaid".to_string());
+        task.payment_amount = Some(10);
+        sender.send_task(&task).await.unwrap();
+        assert!(receiver.poll_tasks().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_on_chain_verify_rejects_wrong_recipient() {
+        let transport = MockTransport::new();
+        let backend: Arc<dyn ExecutionBackend> = Arc::new(VerifyingBackend {
+            details: TransferDetails {
+                from: "0xsender".into(),
+                to: "0xwrong".into(),
+                amount: 100,
+                block_number: 1,
+            },
+        });
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend,
+            required_amount: 50,
+            auto_pay: false,
+            auto_pay_amount: 0,
+            verify_on_chain: true,
+            receiving_account: "0xcorrect".to_string(),
+        });
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let mut task = Task::new(sender.pubkey(), &rpk, "wrong dest");
+        task.payment_tx = Some("0xwrongdest".to_string());
+        task.payment_amount = Some(100);
+        sender.send_task(&task).await.unwrap();
+        assert!(receiver.poll_tasks().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_on_chain_verify_rejects_failed_tx() {
+        let transport = MockTransport::new();
+        let backend: Arc<dyn ExecutionBackend> = Arc::new(FailingVerifyBackend);
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend,
+            required_amount: 50,
+            auto_pay: false,
+            auto_pay_amount: 0,
+            verify_on_chain: true,
+            receiving_account: String::new(),
+        });
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let mut task = Task::new(sender.pubkey(), &rpk, "bad tx");
+        task.payment_tx = Some("0xnonexistent".to_string());
+        task.payment_amount = Some(100);
+        sender.send_task(&task).await.unwrap();
+        assert!(receiver.poll_tasks().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_on_chain_verify_accepts_valid_payment() {
+        let transport = MockTransport::new();
+        let backend: Arc<dyn ExecutionBackend> = Arc::new(VerifyingBackend {
+            details: TransferDetails {
+                from: "0xsender".into(),
+                to: "0xmy_wallet".into(),
+                amount: 200,
+                block_number: 42,
+            },
+        });
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend,
+            required_amount: 100,
+            auto_pay: false,
+            auto_pay_amount: 0,
+            verify_on_chain: true,
+            receiving_account: "0xmy_wallet".to_string(),
+        });
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let mut task = Task::new(sender.pubkey(), &rpk, "valid payment");
+        task.payment_tx = Some("0xgoodtx".to_string());
+        task.payment_amount = Some(200);
+        sender.send_task(&task).await.unwrap();
+        let received = receiver.poll_tasks().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].text(), Some("valid payment"));
     }
 }

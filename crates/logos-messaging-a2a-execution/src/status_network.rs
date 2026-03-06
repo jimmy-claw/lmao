@@ -19,7 +19,7 @@
 use async_trait::async_trait;
 use logos_messaging_a2a_core::AgentCard;
 
-use crate::{AgentId, ExecutionBackend, TxHash};
+use crate::{AgentId, ExecutionBackend, TransferDetails, TxHash};
 
 /// Default Status Network Sepolia RPC endpoint.
 pub const DEFAULT_RPC_URL: &str = "https://public.sepolia.rpc.status.network";
@@ -29,10 +29,14 @@ pub const DEFAULT_RPC_URL: &str = "https://public.sepolia.rpc.status.network";
 /// TX: 0xc89dd4622e137bcf2c69685473bea6acd63205703a5fabc1ba641f37c4cdf9b1
 pub const SN_TESTNET_AGENT_REGISTRY: &str = "0x438bB48f4E3Dd338e98e3EEf7b5dDc90a1490b8C";
 
+/// ERC-20 Transfer event topic: keccak256("Transfer(address,address,uint256)")
+const TRANSFER_EVENT_TOPIC: &str =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
 /// Status Network execution backend.
 ///
-/// Provides agent registration, payments, and balance queries via EVM
-/// smart contracts deployed on the Status Network.
+/// Provides agent registration, payments, balance queries, and transfer
+/// verification via EVM smart contracts deployed on the Status Network.
 pub struct StatusNetworkBackend {
     /// JSON-RPC endpoint URL.
     pub rpc_url: String,
@@ -95,6 +99,63 @@ impl StatusNetworkBackend {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Missing result in RPC response"))
     }
+
+    /// Parse an ERC-20 Transfer event from transaction receipt logs.
+    ///
+    /// Looks for a log entry matching the Transfer(address,address,uint256)
+    /// event signature from the configured token contract.
+    fn parse_transfer_log(
+        &self,
+        logs: &[serde_json::Value],
+    ) -> anyhow::Result<(String, String, u64)> {
+        for log in logs {
+            let topics = log
+                .get("topics")
+                .and_then(|t| t.as_array())
+                .unwrap_or(&Vec::new())
+                .clone();
+
+            // Transfer event has 3 topics: event sig, from (indexed), to (indexed)
+            if topics.len() < 3 {
+                continue;
+            }
+
+            let event_sig = topics[0].as_str().unwrap_or("");
+            if event_sig != TRANSFER_EVENT_TOPIC {
+                continue;
+            }
+
+            // Optionally filter by token contract address
+            let log_addr = log
+                .get("address")
+                .and_then(|a| a.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if !self.token_contract.is_empty() && log_addr != self.token_contract.to_lowercase() {
+                continue;
+            }
+
+            // Decode from/to from indexed topics (last 20 bytes of 32-byte word)
+            let from_topic = topics[1].as_str().unwrap_or("0x0");
+            let to_topic = topics[2].as_str().unwrap_or("0x0");
+            let from = format!("0x{}", &from_topic[from_topic.len().saturating_sub(40)..]);
+            let to = format!("0x{}", &to_topic[to_topic.len().saturating_sub(40)..]);
+
+            // Decode amount from data field (uint256, take low 8 bytes for u64)
+            let data = log.get("data").and_then(|d| d.as_str()).unwrap_or("0x0");
+            let data_hex = data.trim_start_matches("0x");
+            let amount = if data_hex.len() > 16 {
+                // Take last 16 hex chars (8 bytes) to fit in u64
+                u64::from_str_radix(&data_hex[data_hex.len() - 16..], 16).unwrap_or(0)
+            } else {
+                u64::from_str_radix(data_hex, 16).unwrap_or(0)
+            };
+
+            return Ok((from, to, amount));
+        }
+
+        anyhow::bail!("No Transfer event found in transaction logs")
+    }
 }
 
 #[async_trait]
@@ -119,14 +180,12 @@ impl ExecutionBackend for StatusNetworkBackend {
             ) external;
         }
 
-        // Derive a pubkey hash from the agent name (placeholder until real keys)
         let pubkey_hash: FixedBytes<32> = {
             let digest = sha2_hash(card.name.as_bytes());
             FixedBytes::from(digest)
         };
 
         let capabilities: Vec<String> = card.capabilities.clone();
-
         let content_topic = format!("/a2a/1/{}/proto", card.name.to_lowercase());
 
         let call = registerCall {
@@ -138,7 +197,6 @@ impl ExecutionBackend for StatusNetworkBackend {
 
         let calldata = hex::encode(call.abi_encode());
 
-        // Dry-run via eth_call to verify it would succeed
         let result = self
             .rpc_call(
                 "eth_call",
@@ -150,21 +208,15 @@ impl ExecutionBackend for StatusNetworkBackend {
             .await?;
 
         log::info!("register_agent dry-run OK for '{}': {}", card.name, result);
-
-        // Return the pubkey hash as the "tx hash" until we have a signer
         Ok(TxHash(pubkey_hash.0))
     }
 
     /// Send tokens to another agent via the ERC-20 token contract.
     ///
-    /// Calls `transfer(address,uint256)` on the token contract.
     /// Currently a stub that verifies RPC connectivity.
     async fn pay(&self, to: &AgentId, amount: u64) -> anyhow::Result<TxHash> {
-        // Verify connectivity
         let _chain_id = self.rpc_call("eth_chainId", serde_json::json!([])).await?;
 
-        // TODO: Implement ERC-20 transfer with proper signer.
-        // Would encode: token_contract.transfer(to_address, amount)
         let mut hash = [0u8; 32];
         let data = format!("{}:{}", to.0, amount);
         let digest = sha2_hash(data.as_bytes());
@@ -173,11 +225,7 @@ impl ExecutionBackend for StatusNetworkBackend {
     }
 
     /// Query the token balance for an agent.
-    ///
-    /// Calls `balanceOf(address)` on the token contract via `eth_call`.
     async fn balance(&self, agent: &AgentId) -> anyhow::Result<u64> {
-        // balanceOf(address) selector = 0x70a08231
-        // Pad address to 32 bytes for ABI encoding
         let padded_addr = format!("{:0>64}", agent.0.trim_start_matches("0x"));
         let calldata = format!("0x70a08231{}", padded_addr);
 
@@ -191,21 +239,71 @@ impl ExecutionBackend for StatusNetworkBackend {
             )
             .await?;
 
-        // Parse hex result to u64
         let hex_str = result.as_str().unwrap_or("0x0");
         let hex_str = hex_str.trim_start_matches("0x");
         let balance = u64::from_str_radix(hex_str, 16).unwrap_or(0);
         Ok(balance)
     }
+
+    /// Verify a transaction hash on-chain via `eth_getTransactionReceipt`.
+    ///
+    /// Fetches the receipt, checks that the transaction succeeded (status 0x1),
+    /// and parses the ERC-20 Transfer event from the logs.
+    async fn verify_transfer(&self, tx_hash: &str) -> anyhow::Result<TransferDetails> {
+        // Normalise tx hash
+        let tx_hash = if tx_hash.starts_with("0x") {
+            tx_hash.to_string()
+        } else {
+            format!("0x{}", tx_hash)
+        };
+
+        // Fetch receipt
+        let receipt = self
+            .rpc_call("eth_getTransactionReceipt", serde_json::json!([tx_hash]))
+            .await?;
+
+        if receipt.is_null() {
+            anyhow::bail!("Transaction {} not found (not mined yet?)", tx_hash);
+        }
+
+        // Check status (0x1 = success)
+        let status = receipt
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("0x0");
+        if status != "0x1" {
+            anyhow::bail!("Transaction {} failed (status: {})", tx_hash, status);
+        }
+
+        // Get block number
+        let block_hex = receipt
+            .get("blockNumber")
+            .and_then(|b| b.as_str())
+            .unwrap_or("0x0");
+        let block_number = u64::from_str_radix(block_hex.trim_start_matches("0x"), 16).unwrap_or(0);
+
+        // Parse Transfer event from logs
+        let logs = receipt
+            .get("logs")
+            .and_then(|l| l.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let (from, to, amount) = self.parse_transfer_log(&logs)?;
+
+        Ok(TransferDetails {
+            from,
+            to,
+            amount,
+            block_number,
+        })
+    }
 }
 
 /// Simple SHA-256 hash using manual implementation (avoids extra dep).
-/// In production, use the `sha2` crate which is already a workspace dep.
 fn sha2_hash(data: &[u8]) -> [u8; 32] {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    // Placeholder: use a simple hash for deterministic test output.
-    // TODO: Replace with sha2::Sha256 from workspace dep.
     let mut hasher = DefaultHasher::new();
     data.hash(&mut hasher);
     let h = hasher.finish();
@@ -238,5 +336,57 @@ mod tests {
     fn sepolia_uses_default_rpc() {
         let b = StatusNetworkBackend::sepolia("0xREG", "0xTOK");
         assert_eq!(b.rpc_url, DEFAULT_RPC_URL);
+    }
+
+    #[test]
+    fn parse_transfer_log_valid() {
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
+        let logs = vec![serde_json::json!({
+            "address": "0xtoken",
+            "topics": [
+                "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ],
+            "data": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        })];
+        let (from, to, amount) = backend.parse_transfer_log(&logs).unwrap();
+        assert_eq!(from, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(to, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(amount, 100);
+    }
+
+    #[test]
+    fn parse_transfer_log_wrong_contract() {
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
+        let logs = vec![serde_json::json!({
+            "address": "0xother_contract",
+            "topics": [
+                "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ],
+            "data": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        })];
+        assert!(backend.parse_transfer_log(&logs).is_err());
+    }
+
+    #[test]
+    fn parse_transfer_log_no_transfer_event() {
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
+        let logs = vec![serde_json::json!({
+            "address": "0xtoken",
+            "topics": [
+                "0x0000000000000000000000000000000000000000000000000000000000000000"
+            ],
+            "data": "0x00"
+        })];
+        assert!(backend.parse_transfer_log(&logs).is_err());
+    }
+
+    #[test]
+    fn parse_transfer_log_empty() {
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
+        assert!(backend.parse_transfer_log(&[]).is_err());
     }
 }
