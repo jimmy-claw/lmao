@@ -11,7 +11,7 @@
 //!
 //! let backend = StatusNetworkBackend::new(
 //!     "https://public.sepolia.rpc.status.network",
-//!     "0xYOUR_AGENT_REGISTRY_CONTRACT",
+//!     "0x438bB48f4E3Dd338e98e3EEf7b5dDc90a1490b8C",
 //!     "0xYOUR_TOKEN_CONTRACT",
 //! );
 //! ```
@@ -23,6 +23,11 @@ use crate::{AgentId, ExecutionBackend, TxHash};
 
 /// Default Status Network Sepolia RPC endpoint.
 pub const DEFAULT_RPC_URL: &str = "https://public.sepolia.rpc.status.network";
+
+/// Deployed AgentRegistry contract on Status Network Sepolia testnet.
+/// Deployed via `forge create` with `--legacy --gas-price 0`.
+/// TX: 0xc89dd4622e137bcf2c69685473bea6acd63205703a5fabc1ba641f37c4cdf9b1
+pub const SN_TESTNET_AGENT_REGISTRY: &str = "0x438bB48f4E3Dd338e98e3EEf7b5dDc90a1490b8C";
 
 /// Status Network execution backend.
 ///
@@ -94,31 +99,60 @@ impl StatusNetworkBackend {
 
 #[async_trait]
 impl ExecutionBackend for StatusNetworkBackend {
-    /// Register an agent card on-chain by calling the registry contract.
+    /// Register an agent card on-chain by calling the AgentRegistry contract.
     ///
-    /// Encodes the AgentCard as JSON and sends it as calldata to the
-    /// registry contract's `registerAgent(string)` function.
+    /// ABI-encodes a call to `register(bytes32,string,string[],string)` using
+    /// `alloy-sol-types` and sends it via `eth_call` to verify it would succeed.
     ///
-    /// Note: In production, this would use proper ABI encoding via alloy-sol-types.
-    /// Current implementation sends an `eth_call` to verify the transaction would
-    /// succeed. Actual transaction submission requires a signer (future work).
+    /// Note: Full transaction submission requires a signer (future work).
+    /// Currently performs an `eth_call` dry-run against the registry contract.
     async fn register_agent(&self, card: &AgentCard) -> anyhow::Result<TxHash> {
-        let card_json = serde_json::to_string(card)?;
-        // Function selector for registerAgent(string) — keccak256 first 4 bytes
-        // This is a placeholder; real impl would use alloy-sol-types for ABI encoding
-        let _calldata = format!("0x{}{}", "d1a2e4a5", hex::encode(card_json.as_bytes()));
+        use alloy_primitives::FixedBytes;
+        use alloy_sol_types::{sol, SolCall};
 
-        // For now, verify connectivity by calling eth_chainId
-        let chain_id = self.rpc_call("eth_chainId", serde_json::json!([])).await?;
-        log::debug!("Connected to chain: {}", chain_id);
+        sol! {
+            function register(
+                bytes32 pubkeyHash,
+                string name,
+                string[] capabilities,
+                string contentTopic
+            ) external;
+        }
 
-        // TODO: Implement actual transaction signing and submission.
-        // Requires a wallet/signer integration (alloy-signer or similar).
-        // For now, return a deterministic hash derived from the card.
-        let mut hash = [0u8; 32];
-        let digest = sha2_hash(card_json.as_bytes());
-        hash.copy_from_slice(&digest);
-        Ok(TxHash(hash))
+        // Derive a pubkey hash from the agent name (placeholder until real keys)
+        let pubkey_hash: FixedBytes<32> = {
+            let digest = sha2_hash(card.name.as_bytes());
+            FixedBytes::from(digest)
+        };
+
+        let capabilities: Vec<String> = card.capabilities.clone();
+
+        let content_topic = format!("/a2a/1/{}/proto", card.name.to_lowercase());
+
+        let call = registerCall {
+            pubkeyHash: pubkey_hash,
+            name: card.name.clone(),
+            capabilities,
+            contentTopic: content_topic,
+        };
+
+        let calldata = hex::encode(call.abi_encode());
+
+        // Dry-run via eth_call to verify it would succeed
+        let result = self
+            .rpc_call(
+                "eth_call",
+                serde_json::json!([{
+                    "to": self.registry_contract,
+                    "data": format!("0x{}", calldata)
+                }, "latest"]),
+            )
+            .await?;
+
+        log::info!("register_agent dry-run OK for '{}': {}", card.name, result);
+
+        // Return the pubkey hash as the "tx hash" until we have a signer
+        Ok(TxHash(pubkey_hash.0))
     }
 
     /// Send tokens to another agent via the ERC-20 token contract.
