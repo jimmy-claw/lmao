@@ -181,10 +181,19 @@ mod tests {
         let data_a = b"payload alpha".to_vec();
         let data_b = b"payload beta".to_vec();
 
-        let cid_a = backend.upload(data_a.clone()).await.expect("upload A failed");
-        let cid_b = backend.upload(data_b.clone()).await.expect("upload B failed");
+        let cid_a = backend
+            .upload(data_a.clone())
+            .await
+            .expect("upload A failed");
+        let cid_b = backend
+            .upload(data_b.clone())
+            .await
+            .expect("upload B failed");
 
-        assert_ne!(cid_a, cid_b, "different payloads should yield different CIDs");
+        assert_ne!(
+            cid_a, cid_b,
+            "different payloads should yield different CIDs"
+        );
 
         let downloaded_a = backend.download(&cid_a).await.expect("download A failed");
         let downloaded_b = backend.download(&cid_b).await.expect("download B failed");
