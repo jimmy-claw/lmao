@@ -61,7 +61,11 @@ impl StatusNetworkBackend {
     }
 
     /// Send a raw JSON-RPC request and return the result field.
-    async fn rpc_call(&self, method: &str, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn rpc_call(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -69,7 +73,8 @@ impl StatusNetworkBackend {
             "id": 1
         });
 
-        let resp: serde_json::Value = self.client
+        let resp: serde_json::Value = self
+            .client
             .post(&self.rpc_url)
             .json(&body)
             .send()
@@ -142,13 +147,15 @@ impl ExecutionBackend for StatusNetworkBackend {
         let padded_addr = format!("{:0>64}", agent.0.trim_start_matches("0x"));
         let calldata = format!("0x70a08231{}", padded_addr);
 
-        let result = self.rpc_call(
-            "eth_call",
-            serde_json::json!([{
+        let result = self
+            .rpc_call(
+                "eth_call",
+                serde_json::json!([{
                 "to": self.token_contract,
                 "data": calldata
             }, "latest"]),
-        ).await?;
+            )
+            .await?;
 
         // Parse hex result to u64
         let hex_str = result.as_str().unwrap_or("0x0");

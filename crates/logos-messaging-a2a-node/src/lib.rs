@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 pub use logos_messaging_a2a_core::Task as TaskType;
 use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, Message, Task};
-use logos_messaging_a2a_storage::StorageBackend;
 use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
+use logos_messaging_a2a_storage::StorageBackend;
 use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
 use std::collections::HashMap;
@@ -506,9 +506,7 @@ impl<T: Transport> WakuA2ANode<T> {
                     .context("Failed to deserialize offloaded task")?;
                 return Ok(Some(original));
             }
-            eprintln!(
-                "[node] Task has payload_cid but no storage backend configured"
-            );
+            eprintln!("[node] Task has payload_cid but no storage backend configured");
         }
         Ok(Some(task))
     }
@@ -906,15 +904,12 @@ mod tests {
             &self,
             cid: &str,
         ) -> Result<Vec<u8>, logos_messaging_a2a_storage::StorageError> {
-            self.store
-                .lock()
-                .unwrap()
-                .get(cid)
-                .cloned()
-                .ok_or_else(|| logos_messaging_a2a_storage::StorageError::Api {
+            self.store.lock().unwrap().get(cid).cloned().ok_or_else(|| {
+                logos_messaging_a2a_storage::StorageError::Api {
                     status: 404,
                     body: format!("CID not found: {}", cid),
-                })
+                }
+            })
         }
     }
 
@@ -932,14 +927,11 @@ mod tests {
         let published = transport.published.clone();
         let storage = Arc::new(MockStorage::new());
 
-        let node = WakuA2ANode::with_config(
-            "test",
-            "test agent",
-            vec![],
-            transport,
-            fast_config(),
-        )
-        .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 65_536));
+        let node = WakuA2ANode::with_config("test", "test agent", vec![], transport, fast_config())
+            .with_storage_offload(StorageOffloadConfig::with_threshold(
+                storage.clone(),
+                65_536,
+            ));
 
         let task = Task::new(node.pubkey(), "02deadbeef", "small message");
         node.send_task(&task).await.unwrap();
@@ -956,14 +948,8 @@ mod tests {
         let storage = Arc::new(MockStorage::new());
 
         // Very low threshold to force offloading
-        let node = WakuA2ANode::with_config(
-            "test",
-            "test agent",
-            vec![],
-            transport,
-            fast_config(),
-        )
-        .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 10));
+        let node = WakuA2ANode::with_config("test", "test agent", vec![], transport, fast_config())
+            .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 10));
 
         let task = Task::new(
             node.pubkey(),
