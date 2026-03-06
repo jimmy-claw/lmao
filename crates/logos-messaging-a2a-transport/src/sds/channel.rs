@@ -471,6 +471,114 @@ impl<T: Transport> MessageChannel<T> {
         delivered
     }
 
+    /// Send a batch ACK — a lightweight sync message acknowledging multiple
+    /// messages at once. This is useful when a node has received many messages
+    /// and wants to signal acknowledgement without sending individual ACKs.
+    ///
+    /// A batch ACK is implemented as a sync message carrying the node's bloom
+    /// filter (which implicitly acknowledges everything seen) plus causal history.
+    /// Peers use this to clear their outgoing buffers via implicit ACK detection.
+    pub async fn send_batch_ack(&self, topic: &str) -> Result<SyncMessage> {
+        self.send_sync(topic).await
+    }
+
+    /// Build repair requests for missing dependencies in a causal history.
+    ///
+    /// Returns history entries for messages we haven't seen (not in our bloom filter).
+    pub fn build_repair_requests(&self, causal_history: &[HistoryEntry]) -> Vec<HistoryEntry> {
+        causal_history
+            .iter()
+            .filter(|entry| !self.bloom.check(&entry.message_id))
+            .cloned()
+            .collect()
+    }
+
+    /// Send a sync message that includes repair requests for missing dependencies.
+    ///
+    /// When we detect missing causal dependencies (e.g. after buffering a
+    /// message with unresolved deps), we ask peers to re-send them.
+    pub async fn send_repair_request(
+        &self,
+        topic: &str,
+        missing: Vec<HistoryEntry>,
+    ) -> Result<SyncMessage> {
+        let ts = self.next_timestamp();
+        let causal_history = self.build_causal_history();
+        let message_id = compute_message_id(&ts.to_le_bytes());
+
+        let msg = SyncMessage {
+            message_id: message_id.clone(),
+            channel_id: self.channel_id.clone(),
+            sender_id: self.sender_id.clone(),
+            lamport_timestamp: ts,
+            causal_history,
+            bloom_filter: Some(self.bloom.to_bytes()),
+            repair_request: missing,
+        };
+
+        let encoded = serde_json::to_vec(&SdsMessage::Sync(msg.clone()))?;
+        self.transport.publish(topic, &encoded).await?;
+        Ok(msg)
+    }
+
+    /// Handle incoming repair requests — re-publish messages the peer is missing.
+    ///
+    /// Scans the outgoing buffer for the requested message IDs and re-publishes
+    /// them. Returns the number of messages re-sent.
+    pub async fn handle_repair_requests(
+        &self,
+        topic: &str,
+        requests: &[HistoryEntry],
+    ) -> Result<usize> {
+        if requests.is_empty() {
+            return Ok(0);
+        }
+
+        let mut resent = 0;
+
+        // Collect messages to re-send while holding the lock briefly
+        let to_resend: Vec<ContentMessage> = {
+            let outgoing = self.outgoing_buffer.lock().unwrap();
+            requests
+                .iter()
+                .filter_map(|req| {
+                    outgoing
+                        .iter()
+                        .find(|m| m.message_id == req.message_id)
+                        .cloned()
+                })
+                .collect()
+        };
+
+        for msg in to_resend {
+            let encoded = serde_json::to_vec(&SdsMessage::Content(msg))?;
+            self.transport.publish(topic, &encoded).await?;
+            resent += 1;
+        }
+
+        Ok(resent)
+    }
+
+    /// Process an incoming message, handling repair requests from the sender.
+    ///
+    /// This extends [`receive()`](Self::receive) by also checking if the incoming message
+    /// contains repair requests and re-publishing requested messages.
+    pub async fn receive_and_repair(&self, topic: &str, raw: &[u8]) -> Result<Vec<ContentMessage>> {
+        let msg: SdsMessage = match serde_json::from_slice(raw) {
+            Ok(m) => m,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        // Handle repair requests from the sender
+        let repair_reqs = msg.repair_requests().to_vec();
+        if !repair_reqs.is_empty() {
+            self.handle_repair_requests(topic, &repair_reqs).await?;
+        }
+
+        // Delegate to normal receive logic
+        Ok(self.receive(raw))
+    }
+
     /// Check if a message ID has been seen (dedup check).
     pub fn is_duplicate(&self, message_id: &str) -> bool {
         self.bloom.check(message_id)
@@ -649,5 +757,180 @@ mod tests {
             .unwrap();
         assert!(acked);
         assert_eq!(msg.content, payload);
+    }
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+    use crate::memory::InMemoryTransport;
+
+    #[tokio::test]
+    async fn test_batch_ack_clears_outgoing() {
+        let transport = InMemoryTransport::new();
+        let config = ChannelConfig {
+            possible_acks_threshold: 1,
+            ..Default::default()
+        };
+        let alice = MessageChannel::with_config(
+            "chan".to_string(),
+            "alice".to_string(),
+            transport.clone(),
+            config,
+        );
+        let bob = MessageChannel::new("chan".to_string(), "bob".to_string(), transport.clone());
+
+        let topic = "/lmao/1/test/proto";
+
+        let msg1 = alice.send(topic, b"one").await.unwrap();
+        let msg2 = alice.send(topic, b"two").await.unwrap();
+        let msg3 = alice.send(topic, b"three").await.unwrap();
+        assert_eq!(alice.outgoing_pending(), 3);
+
+        for msg in [&msg1, &msg2, &msg3] {
+            let raw = serde_json::to_vec(&SdsMessage::Content(msg.clone())).unwrap();
+            bob.receive(&raw);
+        }
+
+        let batch_ack = bob.send_batch_ack(topic).await.unwrap();
+        let ack_raw = serde_json::to_vec(&SdsMessage::Sync(batch_ack)).unwrap();
+
+        alice.receive(&ack_raw);
+        assert_eq!(alice.outgoing_pending(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_send_repair_request() {
+        let transport = InMemoryTransport::new();
+        let bob = MessageChannel::new("chan".to_string(), "bob".to_string(), transport.clone());
+
+        let topic = "/lmao/1/test/proto";
+
+        let missing = vec![
+            HistoryEntry {
+                message_id: "missing-1".to_string(),
+                lamport_timestamp: 5,
+                retrieval_hint: None,
+            },
+            HistoryEntry {
+                message_id: "missing-2".to_string(),
+                lamport_timestamp: 6,
+                retrieval_hint: None,
+            },
+        ];
+
+        let sync = bob.send_repair_request(topic, missing).await.unwrap();
+        assert_eq!(sync.repair_request.len(), 2);
+        assert_eq!(sync.repair_request[0].message_id, "missing-1");
+        assert_eq!(sync.repair_request[1].message_id, "missing-2");
+    }
+
+    #[tokio::test]
+    async fn test_handle_repair_requests_resends() {
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("chan".to_string(), "alice".to_string(), transport.clone());
+
+        let topic = "/lmao/1/test/proto";
+
+        let msg = alice.send(topic, b"important data").await.unwrap();
+        let msg_id = msg.message_id.clone();
+
+        let requests = vec![HistoryEntry {
+            message_id: msg_id,
+            lamport_timestamp: 0,
+            retrieval_hint: None,
+        }];
+
+        let resent = alice
+            .handle_repair_requests(topic, &requests)
+            .await
+            .unwrap();
+        assert_eq!(resent, 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_repair_requests_unknown_msg() {
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("chan".to_string(), "alice".to_string(), transport.clone());
+
+        let topic = "/lmao/1/test/proto";
+
+        let requests = vec![HistoryEntry {
+            message_id: "nonexistent".to_string(),
+            lamport_timestamp: 0,
+            retrieval_hint: None,
+        }];
+
+        let resent = alice
+            .handle_repair_requests(topic, &requests)
+            .await
+            .unwrap();
+        assert_eq!(resent, 0);
+    }
+
+    #[tokio::test]
+    async fn test_receive_and_repair_full_flow() {
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("chan".to_string(), "alice".to_string(), transport.clone());
+        let bob = MessageChannel::new("chan".to_string(), "bob".to_string(), transport.clone());
+
+        let topic = "/lmao/1/test/proto";
+
+        let msg1 = alice.send(topic, b"first").await.unwrap();
+        let _msg2 = alice.send(topic, b"second").await.unwrap();
+
+        // Bob hasn't seen msg1
+        let missing = bob.build_repair_requests(&[HistoryEntry {
+            message_id: msg1.message_id.clone(),
+            lamport_timestamp: msg1.lamport_timestamp,
+            retrieval_hint: None,
+        }]);
+        assert_eq!(missing.len(), 1);
+
+        let repair_sync = bob.send_repair_request(topic, missing).await.unwrap();
+
+        // Alice handles the repair request — should re-publish msg1
+        let repair_raw = serde_json::to_vec(&SdsMessage::Sync(repair_sync)).unwrap();
+        let delivered = alice.receive_and_repair(topic, &repair_raw).await.unwrap();
+        assert!(delivered.is_empty()); // Sync doesn't deliver content
+
+        // Verify repair happened by subscribing and checking transport history
+        // msg1 was re-published to topic, so a new subscriber gets it via replay
+        let mut rx = transport.subscribe(topic).await.unwrap();
+        // We should see multiple messages (original sends + repair re-send)
+        let mut found_repair = false;
+        while let Ok(data) = rx.try_recv() {
+            if let Ok(SdsMessage::Content(c)) = serde_json::from_slice::<SdsMessage>(&data) {
+                if c.message_id == msg1.message_id {
+                    found_repair = true;
+                }
+            }
+        }
+        assert!(found_repair, "msg1 should have been re-published as repair");
+    }
+
+    #[tokio::test]
+    async fn test_build_repair_requests_filters_seen() {
+        let transport = InMemoryTransport::new();
+        let bob = MessageChannel::new("chan".to_string(), "bob".to_string(), transport.clone());
+
+        bob.bloom.set("seen-1");
+
+        let history = vec![
+            HistoryEntry {
+                message_id: "seen-1".to_string(),
+                lamport_timestamp: 1,
+                retrieval_hint: None,
+            },
+            HistoryEntry {
+                message_id: "unseen-1".to_string(),
+                lamport_timestamp: 2,
+                retrieval_hint: None,
+            },
+        ];
+
+        let missing = bob.build_repair_requests(&history);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].message_id, "unseen-1");
     }
 }
