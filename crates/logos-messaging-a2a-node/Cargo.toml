@@ -8,6 +8,7 @@ logos-messaging-a2a-crypto = { path = "../logos-messaging-a2a-crypto" }
 logos-messaging-a2a-core = { path = "../logos-messaging-a2a-core" }
 logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
 logos-messaging-a2a-storage = { path = "../logos-messaging-a2a-storage", default-features = false }
+logos-messaging-a2a-execution = { path = "../logos-messaging-a2a-execution", default-features = false }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

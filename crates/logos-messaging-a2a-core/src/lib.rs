@@ -61,6 +61,12 @@ pub struct Task {
     /// When present, the actual data can be fetched via a `StorageBackend`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub payload_cid: Option<String>,
+    /// Transaction hash proving payment was made (x402-style payment flow).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub payment_tx: Option<String>,
+    /// Amount paid (in token units).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub payment_amount: Option<u64>,
 }
 
 /// Wire envelope for all messages on Waku topics.
@@ -94,6 +100,8 @@ impl Task {
             result: None,
             payload_cid: None,
             session_id: None,
+            payment_tx: None,
+            payment_amount: None,
         }
     }
 
@@ -119,6 +127,8 @@ impl Task {
             }),
             payload_cid: None,
             session_id: self.session_id.clone(),
+            payment_tx: None,
+            payment_amount: None,
         }
     }
 

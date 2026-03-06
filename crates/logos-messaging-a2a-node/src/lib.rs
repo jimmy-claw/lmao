@@ -3,6 +3,7 @@ use k256::ecdsa::SigningKey;
 pub use logos_messaging_a2a_core::Task as TaskType;
 use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, Message, Task};
 use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
+use logos_messaging_a2a_execution::{AgentId, ExecutionBackend};
 use logos_messaging_a2a_storage::StorageBackend;
 use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
@@ -67,6 +68,24 @@ impl StorageOffloadConfig {
     }
 }
 
+/// Configuration for x402-style payment flow via [`ExecutionBackend`].
+///
+/// When configured on a node:
+/// - **Sending**: if `auto_pay` is true, `backend.pay()` is called before
+///   sending and the TX hash is attached to the outgoing task.
+/// - **Receiving**: if `required_amount > 0`, incoming tasks without a valid
+///   `payment_tx` (or with insufficient `payment_amount`) are rejected.
+pub struct PaymentConfig {
+    /// Execution backend used for `pay()` / `balance()` calls.
+    pub backend: Arc<dyn ExecutionBackend>,
+    /// Minimum payment required to accept an incoming task. 0 = no requirement.
+    pub required_amount: u64,
+    /// Automatically pay when sending tasks.
+    pub auto_pay: bool,
+    /// Amount to auto-pay per outgoing task (only used when `auto_pay` is true).
+    pub auto_pay_amount: u64,
+}
+
 /// A2A node: announce, discover, send/receive tasks over Waku.
 ///
 /// Uses SDS MessageChannel for reliable, causally-ordered delivery with
@@ -83,6 +102,8 @@ pub struct WakuA2ANode<T: Transport> {
     sessions: std::sync::Mutex<HashMap<String, Session>>,
     /// Optional storage offload for large payloads.
     storage_offload: Option<StorageOffloadConfig>,
+    /// Optional x402-style payment configuration.
+    payment: Option<PaymentConfig>,
 }
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -117,6 +138,7 @@ impl<T: Transport> WakuA2ANode<T> {
             task_rx: tokio::sync::Mutex::new(None),
             sessions: std::sync::Mutex::new(HashMap::new()),
             storage_offload: None,
+            payment: None,
         }
     }
 
@@ -159,6 +181,7 @@ impl<T: Transport> WakuA2ANode<T> {
             task_rx: tokio::sync::Mutex::new(None),
             sessions: std::sync::Mutex::new(HashMap::new()),
             storage_offload: None,
+            payment: None,
         }
     }
 
@@ -198,6 +221,7 @@ impl<T: Transport> WakuA2ANode<T> {
             task_rx: tokio::sync::Mutex::new(None),
             sessions: std::sync::Mutex::new(HashMap::new()),
             storage_offload: None,
+            payment: None,
         }
     }
 
@@ -239,6 +263,7 @@ impl<T: Transport> WakuA2ANode<T> {
             task_rx: tokio::sync::Mutex::new(None),
             sessions: std::sync::Mutex::new(HashMap::new()),
             storage_offload: None,
+            payment: None,
         }
     }
 
@@ -249,6 +274,15 @@ impl<T: Transport> WakuA2ANode<T> {
     /// the same config auto-fetch the full payload by CID.
     pub fn with_storage_offload(mut self, config: StorageOffloadConfig) -> Self {
         self.storage_offload = Some(config);
+        self
+    }
+
+    /// Enable x402-style payment flow via an [`ExecutionBackend`].
+    ///
+    /// When configured, outgoing tasks can auto-pay and incoming tasks can
+    /// require payment proof before processing.
+    pub fn with_payment(mut self, config: PaymentConfig) -> Self {
+        self.payment = Some(config);
         self
     }
 
@@ -320,13 +354,18 @@ impl<T: Transport> WakuA2ANode<T> {
     }
 
     /// Send a task, optionally encrypting if recipient has an intro bundle.
+    ///
+    /// When a [`PaymentConfig`] with `auto_pay = true` is set, the node
+    /// calls `backend.pay()` before sending and attaches the TX hash to
+    /// the task envelope.
     pub async fn send_task_to(
         &self,
         task: &Task,
         recipient_card: Option<&AgentCard>,
     ) -> Result<bool> {
+        let task = self.maybe_auto_pay(task).await?;
         let topic = topics::task_topic(&task.to);
-        let payload = self.prepare_payload(task, recipient_card).await?;
+        let payload = self.prepare_payload(&task, recipient_card).await?;
 
         // Use SDS reliable delivery — the SDS message_id (SHA256 of payload)
         // is used for ACK routing, not the task UUID.
@@ -444,6 +483,9 @@ impl<T: Transport> WakuA2ANode<T> {
                 }
             }
         }
+        // Reject tasks that don't meet the payment requirement
+        tasks.retain(|task| self.verify_payment(task));
+
         // Track incoming tasks in their sessions
         for task in &tasks {
             if let Some(ref sid) = task.session_id {
@@ -545,6 +587,48 @@ impl<T: Transport> WakuA2ANode<T> {
         let task = Task::new(self.pubkey(), to, text);
         self.send_task(&task).await?;
         Ok(task)
+    }
+
+    /// If auto-pay is enabled, call `backend.pay()` and attach proof to the task.
+    async fn maybe_auto_pay(&self, task: &Task) -> Result<Task> {
+        if let Some(ref pay_cfg) = self.payment {
+            if pay_cfg.auto_pay && pay_cfg.auto_pay_amount > 0 {
+                let recipient = AgentId(task.to.clone());
+                let tx_hash = pay_cfg
+                    .backend
+                    .pay(&recipient, pay_cfg.auto_pay_amount)
+                    .await
+                    .context("auto-pay failed")?;
+                let mut task = task.clone();
+                task.payment_tx = Some(tx_hash.to_string());
+                task.payment_amount = Some(pay_cfg.auto_pay_amount);
+                return Ok(task);
+            }
+        }
+        Ok(task.clone())
+    }
+
+    /// Check that an incoming task satisfies the payment requirement.
+    /// Returns `true` if the task is accepted, `false` if rejected.
+    fn verify_payment(&self, task: &Task) -> bool {
+        if let Some(ref pay_cfg) = self.payment {
+            if pay_cfg.required_amount > 0 {
+                match (&task.payment_tx, task.payment_amount) {
+                    (Some(_tx), Some(amount)) if amount >= pay_cfg.required_amount => true,
+                    _ => {
+                        eprintln!(
+                            "[node] Rejecting task {} — insufficient payment (need {}, got {:?})",
+                            task.id, pay_cfg.required_amount, task.payment_amount
+                        );
+                        false
+                    }
+                }
+            } else {
+                true
+            }
+        } else {
+            true
+        }
     }
 
     /// Serialize a task into an envelope, offloading to storage if needed.
@@ -1011,5 +1095,131 @@ mod tests {
         assert_eq!(received[0].text(), Some(large_text.as_str()));
         // The reconstructed task should NOT have a payload_cid (it's the original)
         assert!(received[0].payload_cid.is_none());
+    }
+
+    // --- x402 payment tests ---
+
+    struct MockExecutionBackend;
+
+    #[async_trait]
+    impl ExecutionBackend for MockExecutionBackend {
+        async fn register_agent(
+            &self,
+            _card: &AgentCard,
+        ) -> anyhow::Result<logos_messaging_a2a_execution::TxHash> {
+            Ok(logos_messaging_a2a_execution::TxHash([0; 32]))
+        }
+        async fn pay(
+            &self,
+            _to: &AgentId,
+            _amount: u64,
+        ) -> anyhow::Result<logos_messaging_a2a_execution::TxHash> {
+            Ok(logos_messaging_a2a_execution::TxHash([0xab; 32]))
+        }
+        async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+            Ok(1000)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_task_with_payment_attached() {
+        let mut task = Task::new("02aa", "03bb", "pay me");
+        task.payment_tx = Some("abcd1234".to_string());
+        task.payment_amount = Some(100);
+
+        // Serialize and deserialize to verify payment fields survive the wire
+        let json = serde_json::to_string(&task).unwrap();
+        let deserialized: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.payment_tx, Some("abcd1234".to_string()));
+        assert_eq!(deserialized.payment_amount, Some(100));
+    }
+
+    #[tokio::test]
+    async fn test_task_rejected_without_payment() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+
+        // Receiver requires payment of 50
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend: backend.clone(),
+            required_amount: 50,
+            auto_pay: false,
+            auto_pay_amount: 0,
+        });
+        let recipient_pubkey = receiver.pubkey().to_string();
+
+        // Lazy-subscribe
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        // Sender does NOT pay
+        let sender = WakuA2ANode::with_config(
+            "sender",
+            "sender agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+
+        let task = Task::new(sender.pubkey(), &recipient_pubkey, "free ride");
+        sender.send_task(&task).await.unwrap();
+
+        // Receiver should reject the unpaid task
+        let received = receiver.poll_tasks().await.unwrap();
+        assert!(received.is_empty(), "unpaid task should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_auto_pay_on_send() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+
+        // Receiver requires payment and listens
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend: backend.clone(),
+            required_amount: 100,
+            auto_pay: false,
+            auto_pay_amount: 0,
+        });
+        let recipient_pubkey = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        // Sender with auto-pay enabled
+        let sender = WakuA2ANode::with_config(
+            "sender",
+            "sender agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend: backend.clone(),
+            required_amount: 0,
+            auto_pay: true,
+            auto_pay_amount: 100,
+        });
+
+        let task = Task::new(sender.pubkey(), &recipient_pubkey, "paid task");
+        sender.send_task(&task).await.unwrap();
+
+        // Receiver should accept the auto-paid task
+        let received = receiver.poll_tasks().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert!(received[0].payment_tx.is_some(), "should have TX hash");
+        assert_eq!(received[0].payment_amount, Some(100));
+        assert_eq!(received[0].text(), Some("paid task"));
     }
 }
