@@ -42,6 +42,22 @@ impl fmt::Display for TxHash {
     }
 }
 
+/// Details of a verified on-chain token transfer.
+///
+/// Returned by [`ExecutionBackend::verify_transfer`] after querying the chain
+/// to confirm a payment transaction is valid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferDetails {
+    /// Sender address (lowercase hex with 0x prefix).
+    pub from: String,
+    /// Recipient address (lowercase hex with 0x prefix).
+    pub to: String,
+    /// Amount transferred (in token base units).
+    pub amount: u64,
+    /// Block number the transfer was included in.
+    pub block_number: u64,
+}
+
 /// Trait for on-chain agent operations.
 ///
 /// Implementations abstract over different execution layers (Status Network,
@@ -57,6 +73,13 @@ pub trait ExecutionBackend: Send + Sync {
 
     /// Query the token balance for an agent.
     async fn balance(&self, agent: &AgentId) -> anyhow::Result<u64>;
+
+    /// Verify a transaction hash corresponds to a valid ERC-20 transfer.
+    ///
+    /// Queries the chain for the transaction receipt, decodes the `Transfer`
+    /// event log, and returns the transfer details. Returns an error if the
+    /// transaction doesn't exist, failed, or contains no valid transfer event.
+    async fn verify_transfer(&self, tx_hash: &str) -> anyhow::Result<TransferDetails>;
 }
 
 #[cfg(feature = "status-network")]
@@ -97,6 +120,18 @@ mod tests {
         assert!(hash.to_string().starts_with("abab"));
     }
 
+    #[test]
+    fn transfer_details_equality() {
+        let d1 = TransferDetails {
+            from: "0xaaa".into(),
+            to: "0xbbb".into(),
+            amount: 100,
+            block_number: 42,
+        };
+        let d2 = d1.clone();
+        assert_eq!(d1, d2);
+    }
+
     struct MockBackend;
 
     #[async_trait]
@@ -109,6 +144,14 @@ mod tests {
         }
         async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
             Ok(42)
+        }
+        async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+            Ok(TransferDetails {
+                from: "0xsender".into(),
+                to: "0xrecipient".into(),
+                amount: 100,
+                block_number: 1,
+            })
         }
     }
 
@@ -139,5 +182,14 @@ mod tests {
         let backend = MockBackend;
         let bal = backend.balance(&AgentId("0xcafe".into())).await.unwrap();
         assert_eq!(bal, 42);
+    }
+
+    #[tokio::test]
+    async fn mock_backend_verify_transfer() {
+        let backend = MockBackend;
+        let details = backend.verify_transfer("0xdeadbeef").await.unwrap();
+        assert_eq!(details.amount, 100);
+        assert_eq!(details.from, "0xsender");
+        assert_eq!(details.to, "0xrecipient");
     }
 }
