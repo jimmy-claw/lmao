@@ -1,7 +1,11 @@
+pub mod presence;
+
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 pub use logos_messaging_a2a_core::Task as TaskType;
-use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, Message, Task};
+use logos_messaging_a2a_core::{
+    topics, A2AEnvelope, AgentCard, Message, PresenceAnnouncement, Task,
+};
 use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
 use logos_messaging_a2a_execution::{AgentId, ExecutionBackend};
 use logos_messaging_a2a_storage::StorageBackend;
@@ -112,6 +116,10 @@ pub struct WakuA2ANode<T: Transport> {
     payment: Option<PaymentConfig>,
     /// Set of already-seen payment tx hashes to prevent replay attacks.
     seen_tx_hashes: std::sync::Mutex<HashSet<String>>,
+    /// Live peer map built from presence announcements.
+    peer_map: presence::PeerMap,
+    /// Persistent subscription to the presence topic (lazy-initialized).
+    presence_rx: tokio::sync::Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
 }
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -148,6 +156,8 @@ impl<T: Transport> WakuA2ANode<T> {
             storage_offload: None,
             payment: None,
             seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
+            peer_map: presence::PeerMap::new(),
+            presence_rx: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -192,6 +202,8 @@ impl<T: Transport> WakuA2ANode<T> {
             storage_offload: None,
             payment: None,
             seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
+            peer_map: presence::PeerMap::new(),
+            presence_rx: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -233,6 +245,8 @@ impl<T: Transport> WakuA2ANode<T> {
             storage_offload: None,
             payment: None,
             seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
+            peer_map: presence::PeerMap::new(),
+            presence_rx: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -276,6 +290,8 @@ impl<T: Transport> WakuA2ANode<T> {
             storage_offload: None,
             payment: None,
             seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
+            peer_map: presence::PeerMap::new(),
+            presence_rx: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -296,6 +312,82 @@ impl<T: Transport> WakuA2ANode<T> {
     pub fn with_payment(mut self, config: PaymentConfig) -> Self {
         self.payment = Some(config);
         self
+    }
+
+    /// Default presence TTL in seconds (5 minutes).
+    const DEFAULT_PRESENCE_TTL: u64 = 300;
+
+    /// Broadcast a presence announcement on the well-known presence topic.
+    ///
+    /// Other agents subscribed to the presence topic will update their
+    /// `PeerMap` with this node's identity and capabilities.
+    pub async fn announce_presence(&self) -> Result<()> {
+        self.announce_presence_with_ttl(Self::DEFAULT_PRESENCE_TTL)
+            .await
+    }
+
+    /// Broadcast a presence announcement with a custom TTL.
+    pub async fn announce_presence_with_ttl(&self, ttl_secs: u64) -> Result<()> {
+        let announcement = PresenceAnnouncement {
+            agent_id: self.pubkey().to_string(),
+            name: self.card.name.clone(),
+            capabilities: self.card.capabilities.clone(),
+            waku_topic: topics::task_topic(self.pubkey()),
+            ttl_secs,
+            signature: None, // TODO: sign with secp256k1 key
+        };
+        let envelope = A2AEnvelope::Presence(announcement);
+        let payload =
+            serde_json::to_vec(&envelope).context("Failed to serialize presence announcement")?;
+        self.channel
+            .transport()
+            .publish(topics::PRESENCE, &payload)
+            .await
+            .context("Failed to publish presence announcement")?;
+        eprintln!(
+            "[node] Presence announced: {} (TTL={}s)",
+            self.card.name, ttl_secs
+        );
+        Ok(())
+    }
+
+    /// Poll the presence topic for new announcements and update the peer map.
+    ///
+    /// Call this periodically (or before routing a task) to keep the peer
+    /// map fresh. Ignores announcements from this node itself.
+    pub async fn poll_presence(&self) -> Result<usize> {
+        let mut presence_rx = self.presence_rx.lock().await;
+        if presence_rx.is_none() {
+            *presence_rx = Some(self.channel.transport().subscribe(topics::PRESENCE).await?);
+        }
+        let rx = presence_rx.as_mut().unwrap();
+
+        let mut count = 0;
+        while let Ok(msg) = rx.try_recv() {
+            if let Ok(A2AEnvelope::Presence(ann)) = serde_json::from_slice::<A2AEnvelope>(&msg) {
+                if ann.agent_id != self.pubkey() {
+                    self.peer_map.update(&ann);
+                    eprintln!(
+                        "[node] Presence received: {} ({}) caps={:?}",
+                        ann.name,
+                        &ann.agent_id[..8.min(ann.agent_id.len())],
+                        ann.capabilities
+                    );
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    /// Get a reference to the live peer map.
+    pub fn peers(&self) -> &presence::PeerMap {
+        &self.peer_map
+    }
+
+    /// Find peers by capability from the live peer map.
+    pub fn find_peers_by_capability(&self, capability: &str) -> Vec<(String, presence::PeerInfo)> {
+        self.peer_map.find_by_capability(capability)
     }
 
     /// Get this agent's public key hex string.
