@@ -48,9 +48,24 @@ async fn test_presence_announce_and_discover() {
 async fn test_find_peers_by_capability() {
     let transport = InMemoryTransport::new();
 
-    let summarizer = WakuA2ANode::new("summarizer", "Summarizer", vec!["summarize".into()], transport.clone());
-    let translator = WakuA2ANode::new("translator", "Translator", vec!["translate".into()], transport.clone());
-    let polyglot = WakuA2ANode::new("polyglot", "Polyglot", vec!["summarize".into(), "translate".into()], transport.clone());
+    let summarizer = WakuA2ANode::new(
+        "summarizer",
+        "Summarizer",
+        vec!["summarize".into()],
+        transport.clone(),
+    );
+    let translator = WakuA2ANode::new(
+        "translator",
+        "Translator",
+        vec!["translate".into()],
+        transport.clone(),
+    );
+    let polyglot = WakuA2ANode::new(
+        "polyglot",
+        "Polyglot",
+        vec!["summarize".into(), "translate".into()],
+        transport.clone(),
+    );
 
     let observer = WakuA2ANode::new("observer", "Observer", vec![], transport.clone());
     observer.poll_presence().await.unwrap();
