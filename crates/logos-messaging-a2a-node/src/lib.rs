@@ -2,6 +2,7 @@ pub mod presence;
 
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
+use logos_messaging_a2a_core::registry::AgentRegistry;
 pub use logos_messaging_a2a_core::Task as TaskType;
 use logos_messaging_a2a_core::{
     topics, A2AEnvelope, AgentCard, Message, PresenceAnnouncement, Task,
@@ -120,6 +121,8 @@ pub struct WakuA2ANode<T: Transport> {
     peer_map: presence::PeerMap,
     /// Persistent subscription to the presence topic (lazy-initialized).
     presence_rx: tokio::sync::Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
+    /// Optional persistent agent registry (e.g. LEZ on-chain).
+    registry: Option<Arc<dyn AgentRegistry>>,
 }
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -158,6 +161,7 @@ impl<T: Transport> WakuA2ANode<T> {
             seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
             peer_map: presence::PeerMap::new(),
             presence_rx: tokio::sync::Mutex::new(None),
+            registry: None,
         }
     }
 
@@ -204,6 +208,7 @@ impl<T: Transport> WakuA2ANode<T> {
             seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
             peer_map: presence::PeerMap::new(),
             presence_rx: tokio::sync::Mutex::new(None),
+            registry: None,
         }
     }
 
@@ -247,6 +252,7 @@ impl<T: Transport> WakuA2ANode<T> {
             seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
             peer_map: presence::PeerMap::new(),
             presence_rx: tokio::sync::Mutex::new(None),
+            registry: None,
         }
     }
 
@@ -292,6 +298,7 @@ impl<T: Transport> WakuA2ANode<T> {
             seen_tx_hashes: std::sync::Mutex::new(HashSet::new()),
             peer_map: presence::PeerMap::new(),
             presence_rx: tokio::sync::Mutex::new(None),
+            registry: None,
         }
     }
 
@@ -311,6 +318,16 @@ impl<T: Transport> WakuA2ANode<T> {
     /// require payment proof before processing.
     pub fn with_payment(mut self, config: PaymentConfig) -> Self {
         self.payment = Some(config);
+        self
+    }
+
+    /// Attach a persistent agent registry for on-chain discovery.
+    ///
+    /// When set, [`discover_all`](Self::discover_all) merges results from both
+    /// Waku presence and the registry. The node can also
+    /// [`register`](Self::register_in_registry) itself for permanent discovery.
+    pub fn with_registry(mut self, registry: Arc<dyn AgentRegistry>) -> Self {
+        self.registry = Some(registry);
         self
     }
 
@@ -449,6 +466,64 @@ impl<T: Transport> WakuA2ANode<T> {
             .unsubscribe(topics::DISCOVERY)
             .await;
         Ok(cards)
+    }
+
+    /// Register this node's AgentCard in the persistent registry.
+    ///
+    /// Returns an error if no registry is configured or if the agent
+    /// is already registered (use [`update_registry`](Self::update_registry)
+    /// to update an existing registration).
+    pub async fn register_in_registry(&self) -> Result<()> {
+        let registry = self.registry.as_ref().context("no registry configured")?;
+        registry
+            .register(self.card.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    /// Update this node's AgentCard in the persistent registry.
+    pub async fn update_registry(&self) -> Result<()> {
+        let registry = self.registry.as_ref().context("no registry configured")?;
+        registry
+            .update(self.card.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    /// Remove this node from the persistent registry.
+    pub async fn deregister_from_registry(&self) -> Result<()> {
+        let registry = self.registry.as_ref().context("no registry configured")?;
+        registry
+            .deregister(&self.card.public_key)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    /// Discover agents from all sources: Waku ephemeral discovery + persistent registry.
+    ///
+    /// Deduplicates by public key, preferring the registry version when both exist
+    /// (since on-chain data is the source of truth).
+    pub async fn discover_all(&self) -> Result<Vec<AgentCard>> {
+        let mut by_key: HashMap<String, AgentCard> = HashMap::new();
+
+        // Waku ephemeral discovery first
+        let waku_cards = self.discover().await?;
+        for card in waku_cards {
+            by_key.insert(card.public_key.clone(), card);
+        }
+
+        // Registry overwrites (source of truth)
+        if let Some(ref registry) = self.registry {
+            if let Ok(reg_cards) = registry.list().await {
+                for card in reg_cards {
+                    if card.public_key != self.card.public_key {
+                        by_key.insert(card.public_key.clone(), card);
+                    }
+                }
+            }
+        }
+
+        Ok(by_key.into_values().collect())
     }
 
     /// Send a task to another agent. Uses SDS reliable delivery with
@@ -1957,5 +2032,125 @@ mod tests {
 
         let responses = client.poll_tasks().await.unwrap();
         assert_eq!(responses.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    use logos_messaging_a2a_core::registry::InMemoryRegistry;
+    use logos_messaging_a2a_transport::memory::InMemoryTransport;
+
+    fn make_node(name: &str) -> WakuA2ANode<InMemoryTransport> {
+        let transport = InMemoryTransport::new();
+        WakuA2ANode::new(
+            name,
+            &format!("{} agent", name),
+            vec!["test".into()],
+            transport,
+        )
+    }
+
+    #[tokio::test]
+    async fn with_registry_builder() {
+        let transport = InMemoryTransport::new();
+        let registry = Arc::new(InMemoryRegistry::new());
+        let node = WakuA2ANode::new("test", "test agent", vec![], transport)
+            .with_registry(registry.clone());
+        assert!(node.registry.is_some());
+    }
+
+    #[tokio::test]
+    async fn register_in_registry_succeeds() {
+        let node = make_node("echo");
+        let registry = Arc::new(InMemoryRegistry::new());
+        let node = node.with_registry(registry.clone());
+
+        node.register_in_registry().await.unwrap();
+        let card = registry.get(&node.card.public_key).await.unwrap();
+        assert_eq!(card.name, "echo");
+    }
+
+    #[tokio::test]
+    async fn register_without_registry_fails() {
+        let node = make_node("echo");
+        let result = node.register_in_registry().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no registry"));
+    }
+
+    #[tokio::test]
+    async fn update_registry_succeeds() {
+        let registry = Arc::new(InMemoryRegistry::new());
+        let node = make_node("v1");
+        let node = node.with_registry(registry.clone());
+        node.register_in_registry().await.unwrap();
+
+        // Simulate card update (change name field by re-registering after update)
+        let mut updated_card = node.card.clone();
+        updated_card.name = "v2".into();
+        registry.update(updated_card.clone()).await.unwrap();
+
+        let got = registry.get(&node.card.public_key).await.unwrap();
+        assert_eq!(got.name, "v2");
+    }
+
+    #[tokio::test]
+    async fn deregister_from_registry_succeeds() {
+        let registry = Arc::new(InMemoryRegistry::new());
+        let node = make_node("temp").with_registry(registry.clone());
+        node.register_in_registry().await.unwrap();
+        node.deregister_from_registry().await.unwrap();
+
+        let result = registry.get(&node.card.public_key).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn discover_all_merges_waku_and_registry() {
+        let transport = InMemoryTransport::new();
+        let registry = Arc::new(InMemoryRegistry::new());
+
+        // Register an agent in the registry
+        let reg_card = AgentCard {
+            name: "registry-agent".into(),
+            description: "from registry".into(),
+            version: "1.0.0".into(),
+            capabilities: vec!["search".into()],
+            public_key: "registry_key_001".into(),
+            intro_bundle: None,
+        };
+        registry.register(reg_card).await.unwrap();
+
+        let node =
+            WakuA2ANode::new("discoverer", "disc", vec![], transport).with_registry(registry);
+
+        let all = node.discover_all().await.unwrap();
+        // Should find the registry agent
+        assert!(all.iter().any(|c| c.name == "registry-agent"));
+    }
+
+    #[tokio::test]
+    async fn discover_all_excludes_self_from_registry() {
+        let transport = InMemoryTransport::new();
+        let registry = Arc::new(InMemoryRegistry::new());
+
+        let node =
+            WakuA2ANode::new("self-node", "me", vec![], transport).with_registry(registry.clone());
+
+        // Register self in registry
+        node.register_in_registry().await.unwrap();
+
+        let all = node.discover_all().await.unwrap();
+        // Should NOT find self
+        assert!(all.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discover_all_without_registry_returns_waku_only() {
+        let node = make_node("plain");
+        // No registry set — should still work, just return Waku results
+        let all = node.discover_all().await.unwrap();
+        assert!(all.is_empty()); // no Waku broadcasts either
     }
 }

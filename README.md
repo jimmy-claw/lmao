@@ -330,6 +330,42 @@ The `PeerMap` lazily evicts expired entries. Call `peers().evict_expired()` to
 clean up, or just rely on `get()` / `find_by_capability()` which skip expired
 entries automatically.
 
+## Persistent Agent Registry (LEZ)
+
+While presence broadcasts provide ephemeral discovery, the **Agent Registry**
+trait enables persistent, on-chain agent discovery via LEZ (the Logos Execution
+Zone). Agents register their `AgentCard` once, and it remains discoverable even
+when the agent is offline.
+
+```rust
+use logos_messaging_a2a_core::registry::{AgentRegistry, InMemoryRegistry};
+use logos_messaging_a2a_node::WakuA2ANode;
+use logos_messaging_a2a_transport::memory::InMemoryTransport;
+use std::sync::Arc;
+
+let transport = InMemoryTransport::new();
+let registry = Arc::new(InMemoryRegistry::new());
+
+let node = WakuA2ANode::new("echo", "Echo agent", vec!["echo".into()], transport)
+    .with_registry(registry.clone());
+
+// Register once — persists across restarts
+node.register_in_registry().await?;
+
+// discover_all() merges Waku presence + registry results
+let all_agents = node.discover_all().await?;
+```
+
+The `AgentRegistry` trait is backend-agnostic:
+
+| Backend | Status | Description |
+|---------|--------|-------------|
+| `InMemoryRegistry` | ✅ Ready | In-process mock for testing |
+| LEZ (SPELbook) | 🔜 Planned | On-chain PDA accounts via SPEL framework |
+
+Discovery merges both sources, with the registry as source of truth when an
+agent appears in both. Self-entries are excluded from results.
+
 ## x402 Payment Flow
 
 LMAO supports [x402-style](https://www.x402.org/) payment gating: agents can

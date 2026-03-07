@@ -2263,11 +2263,13 @@ name = "logos-messaging-a2a-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "hex",
  "k256 0.13.4",
  "logos-messaging-a2a-crypto",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
 ]
 
