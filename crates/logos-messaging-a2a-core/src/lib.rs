@@ -69,6 +69,29 @@ pub struct Task {
     pub payment_amount: Option<u64>,
 }
 
+/// Presence announcement broadcast on the well-known presence topic.
+///
+/// Agents periodically publish these so peers can build a live map of
+/// available agents and their capabilities without querying a registry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PresenceAnnouncement {
+    /// Agent public key (secp256k1 compressed hex) — unique identity.
+    pub agent_id: String,
+    /// Human-readable agent name.
+    pub name: String,
+    /// Capabilities this agent offers (e.g. `["summarize", "translate"]`).
+    pub capabilities: Vec<String>,
+    /// Waku content topic where this agent receives tasks.
+    pub waku_topic: String,
+    /// How long (seconds) this announcement is valid. Peers should evict
+    /// entries older than `ttl_secs` without a refresh.
+    pub ttl_secs: u64,
+    /// Optional secp256k1 signature over the canonical JSON of the other
+    /// fields, proving the announcement comes from the claimed `agent_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<Vec<u8>>,
+}
+
 /// Wire envelope for all messages on Waku topics.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -82,6 +105,7 @@ pub enum A2AEnvelope {
         encrypted: EncryptedPayload,
         sender_pubkey: String,
     },
+    Presence(PresenceAnnouncement),
 }
 
 impl Task {
@@ -157,6 +181,10 @@ impl Task {
 /// Waku content topic helpers.
 pub mod topics {
     pub const DISCOVERY: &str = "/waku-a2a/1/discovery/proto";
+
+    /// Well-known topic for presence announcements.
+    /// All agents subscribe on startup to discover live peers.
+    pub const PRESENCE: &str = "/lmao/1/presence/proto";
 
     pub fn task_topic(recipient_pubkey: &str) -> String {
         format!("/waku-a2a/1/task/{}/proto", recipient_pubkey)
@@ -293,5 +321,43 @@ mod tests {
         let card: AgentCard = serde_json::from_str(json).unwrap();
         assert_eq!(card.name, "echo");
         assert!(card.intro_bundle.is_none());
+    }
+
+    #[test]
+    fn test_presence_announcement_serialization() {
+        let ann = PresenceAnnouncement {
+            agent_id: "02abcdef".to_string(),
+            name: "echo".to_string(),
+            capabilities: vec!["text".to_string(), "summarize".to_string()],
+            waku_topic: "/waku-a2a/1/task/02abcdef/proto".to_string(),
+            ttl_secs: 300,
+            signature: None,
+        };
+        let json = serde_json::to_string(&ann).unwrap();
+        let deserialized: PresenceAnnouncement = serde_json::from_str(&json).unwrap();
+        assert_eq!(ann, deserialized);
+        assert!(!json.contains("signature"));
+    }
+
+    #[test]
+    fn test_presence_envelope_serialization() {
+        let ann = PresenceAnnouncement {
+            agent_id: "02abcdef".to_string(),
+            name: "echo".to_string(),
+            capabilities: vec!["text".to_string()],
+            waku_topic: "/waku-a2a/1/task/02abcdef/proto".to_string(),
+            ttl_secs: 300,
+            signature: Some(vec![0xab, 0xcd]),
+        };
+        let envelope = A2AEnvelope::Presence(ann.clone());
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(json.contains("presence"));
+        let deserialized: A2AEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(envelope, deserialized);
+    }
+
+    #[test]
+    fn test_presence_topic() {
+        assert_eq!(topics::PRESENCE, "/lmao/1/presence/proto");
     }
 }
