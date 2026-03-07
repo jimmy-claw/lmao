@@ -2233,6 +2233,7 @@ dependencies = [
  "async-trait",
  "logos-messaging-a2a-core",
  "logos-messaging-a2a-crypto",
+ "logos-messaging-a2a-execution",
  "logos-messaging-a2a-node",
  "logos-messaging-a2a-storage",
  "logos-messaging-a2a-transport",
