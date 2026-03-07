@@ -361,8 +361,10 @@ impl<T: Transport> MessageChannel<T> {
             Err(_) => return Vec::new(),
         };
 
-        // Dedup
-        if self.bloom.check_and_set(msg.message_id()) {
+        // Dedup — only check, do NOT set yet. We set in bloom only after
+        // delivery, so that buffered (out-of-order) messages don't falsely
+        // satisfy causal dependencies of other buffered messages.
+        if self.bloom.check(msg.message_id()) {
             return Vec::new();
         }
 
@@ -376,8 +378,12 @@ impl<T: Transport> MessageChannel<T> {
                 self.update_timestamp(content.lamport_timestamp);
                 // Check if causal dependencies are satisfied
                 if self.dependencies_satisfied(&content.causal_history) {
+                    self.bloom.set(&content.message_id);
                     self.record_in_history(&content.message_id, content.lamport_timestamp);
-                    vec![content]
+                    let mut delivered = vec![content];
+                    // This delivery may unblock buffered messages
+                    delivered.extend(self.resolve_buffered());
+                    delivered
                 } else {
                     // Buffer for later resolution
                     self.incoming_buffer
@@ -389,11 +395,13 @@ impl<T: Transport> MessageChannel<T> {
                 }
             }
             SdsMessage::Sync(sync) => {
+                self.bloom.set(&sync.message_id);
                 self.update_timestamp(sync.lamport_timestamp);
                 // Sync messages don't deliver content but may resolve buffered deps
                 self.resolve_buffered()
             }
-            SdsMessage::Ephemeral(_) => {
+            SdsMessage::Ephemeral(eph) => {
+                self.bloom.set(&eph.message_id);
                 // Ephemeral messages have no causal ordering
                 Vec::new()
             }
@@ -454,6 +462,7 @@ impl<T: Transport> MessageChannel<T> {
             for msg in buffer.drain(..) {
                 if let SdsMessage::Content(content) = &msg {
                     if self.dependencies_satisfied(&content.causal_history) {
+                        self.bloom.set(&content.message_id);
                         self.record_in_history(&content.message_id, content.lamport_timestamp);
                         delivered.push(content.clone());
                         made_progress = true;
@@ -932,5 +941,175 @@ mod repair_tests {
         let missing = bob.build_repair_requests(&history);
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].message_id, "unseen-1");
+    }
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+    use crate::memory::InMemoryTransport;
+
+    #[tokio::test]
+    async fn test_three_message_reverse_delivery() {
+        // msg3 depends on msg2, msg2 depends on msg1.
+        // Deliver in reverse order: msg3, msg2, msg1.
+        // All three should be delivered in causal order when msg1 arrives.
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("ch".into(), "alice".into(), transport.clone());
+        let bob = MessageChannel::new("ch".into(), "bob".into(), transport.clone());
+
+        let topic = "/test/proto";
+        let msg1 = alice.send(topic, b"first").await.unwrap();
+        let msg2 = alice.send(topic, b"second").await.unwrap();
+        let msg3 = alice.send(topic, b"third").await.unwrap();
+
+        // Deliver msg3 first — should buffer (depends on msg1, msg2)
+        let raw3 = serde_json::to_vec(&SdsMessage::Content(msg3)).unwrap();
+        let delivered = bob.receive(&raw3);
+        assert_eq!(delivered.len(), 0);
+        assert_eq!(bob.incoming_pending(), 1);
+
+        // Deliver msg2 — should also buffer (depends on msg1)
+        let raw2 = serde_json::to_vec(&SdsMessage::Content(msg2)).unwrap();
+        let delivered = bob.receive(&raw2);
+        assert_eq!(delivered.len(), 0);
+        assert_eq!(bob.incoming_pending(), 2);
+
+        // Deliver msg1 — should deliver all three in causal order
+        let raw1 = serde_json::to_vec(&SdsMessage::Content(msg1)).unwrap();
+        let delivered = bob.receive(&raw1);
+        assert_eq!(delivered.len(), 3);
+        assert_eq!(delivered[0].content, b"first");
+        assert_eq!(delivered[1].content, b"second");
+        assert_eq!(delivered[2].content, b"third");
+        assert_eq!(bob.incoming_pending(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_sync_resolves_buffered_messages() {
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("ch".into(), "alice".into(), transport.clone());
+        let bob = MessageChannel::new("ch".into(), "bob".into(), transport.clone());
+
+        let topic = "/test/proto";
+        let msg1 = alice.send(topic, b"first").await.unwrap();
+        let msg2 = alice.send(topic, b"second").await.unwrap();
+
+        // Bob receives msg2 first (buffered — depends on msg1)
+        let raw2 = serde_json::to_vec(&SdsMessage::Content(msg2)).unwrap();
+        let delivered = bob.receive(&raw2);
+        assert_eq!(delivered.len(), 0);
+
+        // Simulate bob learning about msg1 via bloom (e.g. from another channel)
+        bob.bloom.set(&msg1.message_id);
+
+        // A sync from alice triggers resolve attempt
+        let sync = alice.send_sync(topic).await.unwrap();
+        let sync_raw = serde_json::to_vec(&SdsMessage::Sync(sync)).unwrap();
+        let delivered = bob.receive(&sync_raw);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].content, b"second");
+    }
+
+    #[tokio::test]
+    async fn test_receive_malformed_data() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        assert!(ch.receive(b"not json at all").is_empty());
+        assert!(ch.receive(b"{\"foo\": \"bar\"}").is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ephemeral_not_delivered_via_receive() {
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("ch".into(), "alice".into(), transport.clone());
+        let bob = MessageChannel::new("ch".into(), "bob".into(), transport.clone());
+
+        let eph = alice
+            .send_ephemeral("/test", b"ephemeral data")
+            .await
+            .unwrap();
+        let raw = serde_json::to_vec(&SdsMessage::Ephemeral(eph)).unwrap();
+        let delivered = bob.receive(&raw);
+        assert!(delivered.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fire_and_forget_config() {
+        let config = ChannelConfig::fire_and_forget();
+        assert_eq!(config.ack_timeout, Duration::from_millis(0));
+        assert_eq!(config.max_retries, 0);
+    }
+
+    #[tokio::test]
+    async fn test_send_reliable_no_ack_returns_false() {
+        let transport = InMemoryTransport::new();
+        let config = ChannelConfig {
+            ack_timeout: Duration::from_millis(10),
+            max_retries: 0,
+            ..Default::default()
+        };
+        let ch = MessageChannel::with_config("ch".into(), "alice".into(), transport, config);
+        let (msg, acked) = ch.send_reliable("/test", b"no-ack").await.unwrap();
+        assert!(!acked);
+        assert_eq!(msg.content, b"no-ack");
+    }
+
+    #[tokio::test]
+    async fn test_lamport_timestamp_updates_on_receive() {
+        let transport = InMemoryTransport::new();
+        let bob = MessageChannel::new("ch".into(), "bob".into(), transport.clone());
+
+        let bob_ts_before = bob.lamport_timestamp();
+
+        let msg = ContentMessage::new("ch", "alice", 999_999_999, b"hi");
+        let raw = serde_json::to_vec(&SdsMessage::Content(msg)).unwrap();
+        bob.receive(&raw);
+
+        let bob_ts_after = bob.lamport_timestamp();
+        assert!(
+            bob_ts_after > 999_999_999,
+            "bob should adopt the higher timestamp"
+        );
+        assert!(bob_ts_after > bob_ts_before);
+    }
+
+    #[tokio::test]
+    async fn test_dedup_prevents_double_delivery() {
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("ch".into(), "alice".into(), transport.clone());
+        let bob = MessageChannel::new("ch".into(), "bob".into(), transport.clone());
+
+        let msg = alice.send("/test", b"once").await.unwrap();
+        let raw = serde_json::to_vec(&SdsMessage::Content(msg)).unwrap();
+
+        let d1 = bob.receive(&raw);
+        assert_eq!(d1.len(), 1);
+
+        // Same message again — should be deduped
+        let d2 = bob.receive(&raw);
+        assert_eq!(d2.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_buffered_message_not_in_bloom_until_delivered() {
+        // Verify that buffered messages don't pollute the bloom filter
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("ch".into(), "alice".into(), transport.clone());
+        let bob = MessageChannel::new("ch".into(), "bob".into(), transport.clone());
+
+        let topic = "/test/proto";
+        let _msg1 = alice.send(topic, b"first").await.unwrap();
+        let msg2 = alice.send(topic, b"second").await.unwrap();
+
+        // Bob receives msg2 (depends on msg1, goes to buffer)
+        let raw2 = serde_json::to_vec(&SdsMessage::Content(msg2.clone())).unwrap();
+        bob.receive(&raw2);
+
+        // msg2 should NOT be in bob's bloom yet (it's buffered, not delivered)
+        assert!(
+            !bob.bloom.check(&msg2.message_id),
+            "buffered message should not be in bloom"
+        );
+        assert_eq!(bob.incoming_pending(), 1);
     }
 }

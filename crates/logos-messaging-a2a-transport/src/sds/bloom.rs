@@ -187,3 +187,52 @@ mod tests {
         assert!(!restored.check("never-added"));
     }
 }
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    #[test]
+    fn test_bloom_auto_reset_on_capacity() {
+        let filter = SdsBloomFilter::with_params(10, 0.001);
+        for i in 0..9 {
+            filter.set(&format!("msg-{}", i));
+        }
+        assert_eq!(filter.len(), 9);
+        for i in 0..9 {
+            assert!(filter.check(&format!("msg-{}", i)));
+        }
+        // Adding the 10th triggers reset
+        filter.set("msg-9");
+        assert_eq!(filter.len(), 0);
+        assert!(
+            !filter.check("msg-0"),
+            "filter should be cleared after reset"
+        );
+    }
+
+    #[test]
+    fn test_bloom_from_bytes_too_short() {
+        assert!(SdsBloomFilter::from_bytes(&[0u8; 10]).is_none());
+        assert!(SdsBloomFilter::from_bytes(&[]).is_none());
+    }
+
+    #[test]
+    fn test_bloom_len_and_is_empty() {
+        let filter = SdsBloomFilter::new();
+        assert!(filter.is_empty());
+        assert_eq!(filter.len(), 0);
+        filter.set("a");
+        assert!(!filter.is_empty());
+        assert_eq!(filter.len(), 1);
+    }
+
+    #[test]
+    fn test_bloom_check_and_set_does_not_double_count() {
+        let filter = SdsBloomFilter::new();
+        assert!(!filter.check_and_set("msg-1"));
+        assert_eq!(filter.len(), 1);
+        assert!(filter.check_and_set("msg-1"));
+        assert_eq!(filter.len(), 1);
+    }
+}
