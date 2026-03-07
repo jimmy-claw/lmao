@@ -27,6 +27,7 @@ Google's A2A protocol is great. But it assumes HTTP: stable endpoints, central r
 │  /lmao/1/discovery/proto     ← AgentCard broadcasts │
 │  /lmao/1/task/{pubkey}/proto ← Task inbox per agent │
 │  /lmao/1/ack/{msg_id}/proto  ← SDS acknowledgements │
+│  /lmao/1/presence/proto       ← Peer discovery        │
 └──────────┬──────────────┬──────────────┬─────────────┘
            │              │              │
       ┌────▼────┐    ┌───▼────┐    ┌───▼────┐
@@ -268,7 +269,7 @@ LOGOS_CORE_LIB_DIR=/path/to/sdk/lib make demo-logos-core-real
 | `logos-messaging-a2a-core` | A2A types: `AgentCard`, `Task`, `Message`, `Part` |
 | `logos-messaging-a2a-transport` | `Transport` trait + nwaku REST + `InMemoryTransport` + `LogosCoreDeliveryTransport` + SDS reliability |
 | `logos-messaging-a2a-storage` | `StorageBackend` trait + Logos Storage (Codex) REST + `LogosCoreStorageBackend` |
-| `logos-messaging-a2a-node` | A2A node: announce, discover, send/receive tasks |
+| `logos-messaging-a2a-node` | A2A node: announce, discover, send/receive tasks, presence, payments |
 | `logos-messaging-a2a-cli` | CLI for interacting with the network |
 | `logos-messaging-a2a-mcp` | MCP bridge — expose agents as tools for Claude, Cursor, etc. |
 | `logos-messaging-a2a-ffi` | C FFI bridge for Logos Core Qt module integration |
@@ -297,6 +298,76 @@ let node = WakuA2ANode::new("agent", "my agent", vec![], transport)
     .with_storage_offload(StorageOffloadConfig::new(storage));
 // Large payloads are now offloaded automatically on send and fetched on receive.
 ```
+
+## Presence Discovery
+
+Agents announce themselves on a well-known Waku topic (`/lmao/1/presence/proto`).
+Other agents subscribe, build a live `PeerMap`, and query it by capability when
+routing tasks — no central registry needed.
+
+```rust
+use logos_messaging_a2a_transport::memory::InMemoryTransport;
+use logos_messaging_a2a_node::WakuA2ANode;
+
+// Create two agents on a shared transport
+let transport = InMemoryTransport::new();
+let alice = WakuA2ANode::new("alice", "Alice agent", vec!["summarize".into()], transport.clone());
+let bob = WakuA2ANode::new("bob", "Bob agent", vec!["code".into()], transport.clone());
+
+// Alice announces presence (TTL = 5 min by default)
+alice.announce_presence().await?;
+
+// Bob polls presence and discovers Alice
+bob.poll_presence().await?;
+let peers = bob.find_peers_by_capability("summarize");
+assert_eq!(peers.len(), 1);
+assert_eq!(peers[0].1.name, "alice");
+```
+
+The `PeerMap` lazily evicts expired entries. Call `peers().evict_expired()` to
+clean up, or just rely on `get()` / `find_by_capability()` which skip expired
+entries automatically.
+
+## x402 Payment Flow
+
+LMAO supports [x402-style](https://www.x402.org/) payment gating: agents can
+require payment before processing tasks, and senders can auto-pay via an
+`ExecutionBackend`.
+
+```rust
+use logos_messaging_a2a_node::{PaymentConfig, WakuA2ANode};
+use std::sync::Arc;
+
+// Receiver: require 100 tokens per task, verify on-chain
+let receiver = WakuA2ANode::new("service", "Paid service", vec![], transport.clone())
+    .with_payment(PaymentConfig {
+        backend: backend.clone(),
+        required_amount: 100,
+        auto_pay: false,
+        auto_pay_amount: 0,
+        verify_on_chain: true,
+        receiving_account: "0xmy_wallet".to_string(),
+    });
+
+// Sender: auto-pay 100 tokens on every outgoing task
+let sender = WakuA2ANode::new("client", "Client", vec![], transport.clone())
+    .with_payment(PaymentConfig {
+        backend: backend.clone(),
+        required_amount: 0,
+        auto_pay: true,
+        auto_pay_amount: 100,
+        verify_on_chain: false,
+        receiving_account: String::new(),
+    });
+```
+
+**Security features:**
+- **Replay protection** — each tx hash can only be used once
+- **On-chain verification** — optionally verify amount + recipient via `ExecutionBackend`
+- **Offline mode** — trust claimed amounts when on-chain verification is disabled
+
+Currently supported backends: `StatusNetworkBackend` (Status Network Sepolia).
+`LezExecutionBackend` is stubbed for future LEZ chain support.
 
 ## Testing
 
@@ -361,6 +432,9 @@ module/
 - [x] libwaku FFI —  via  feature (no separate nwaku process)
 - [x] CID-based large payload offloading to Logos Storage
 - [x] Full SDS protocol — bloom filters, causal ordering, batch ACK, repair requests
+- [x] Waku presence broadcasts — PeerMap discovery via well-known topic
+- [x] x402 payment flow — auto-pay, payment gating, on-chain verification, replay protection
+- [x] End-to-end demo — two agents, one task, payment flow, InMemoryTransport
 - [ ] Logos Chat SDK — Double Ratchet for forward secrecy
 - [ ] LEZ agent registry — on-chain AgentCards via SPELbook
 - [ ] Logos Core plugin — packaged `.lgx` module
