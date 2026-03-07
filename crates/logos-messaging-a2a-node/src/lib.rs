@@ -609,7 +609,7 @@ impl<T: Transport> WakuA2ANode<T> {
     }
 
     /// If auto-pay is enabled, call `backend.pay()` and attach proof to the task.
-    async fn maybe_auto_pay(&self, task: &Task) -> Result<Task> {
+    pub async fn maybe_auto_pay(&self, task: &Task) -> Result<Task> {
         if let Some(ref pay_cfg) = self.payment {
             if pay_cfg.auto_pay && pay_cfg.auto_pay_amount > 0 {
                 let recipient = AgentId(task.to.clone());

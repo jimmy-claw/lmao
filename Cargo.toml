@@ -43,6 +43,7 @@ logos-messaging-a2a-core = { path = "crates/logos-messaging-a2a-core" }
 logos-messaging-a2a-transport = { path = "crates/logos-messaging-a2a-transport" }
 logos-messaging-a2a-storage = { path = "crates/logos-messaging-a2a-storage" }
 logos-messaging-a2a-node = { path = "crates/logos-messaging-a2a-node" }
+logos-messaging-a2a-execution = { path = "crates/logos-messaging-a2a-execution", default-features = false }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -57,3 +58,7 @@ name = "ping_pong"
 path = "examples/ping_pong.rs"
 
 # No change needed here — sha2 goes in transport crate
+
+[[example]]
+name = "two_agents"
+path = "examples/two_agents.rs"
