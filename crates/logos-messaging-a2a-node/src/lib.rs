@@ -1684,4 +1684,278 @@ mod tests {
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].text(), Some("valid payment"));
     }
+
+    // ---- New coverage: from_key, with_config, respond, send_text, presence ----
+
+    #[test]
+    fn test_from_key_deterministic_pubkey() {
+        let transport = MockTransport::new();
+        let key = SigningKey::random(&mut rand_core());
+        let expected_pk = hex::encode(key.verifying_key().to_encoded_point(true).as_bytes());
+
+        let node = WakuA2ANode::from_key(
+            "det",
+            "deterministic node",
+            vec!["text".into()],
+            transport,
+            key,
+        );
+        assert_eq!(node.pubkey(), expected_pk);
+        assert_eq!(node.card.name, "det");
+        assert_eq!(node.card.description, "deterministic node");
+        assert_eq!(node.card.capabilities, vec!["text".to_string()]);
+    }
+
+    #[test]
+    fn test_from_key_same_key_same_pubkey() {
+        let key_bytes = [42u8; 32];
+        let key1 = SigningKey::from_bytes((&key_bytes).into()).unwrap();
+        let key2 = SigningKey::from_bytes((&key_bytes).into()).unwrap();
+
+        let node1 = WakuA2ANode::from_key("a", "a", vec![], MockTransport::new(), key1);
+        let node2 = WakuA2ANode::from_key("b", "b", vec![], MockTransport::new(), key2);
+
+        assert_eq!(node1.pubkey(), node2.pubkey());
+    }
+
+    #[test]
+    fn test_with_config_custom_settings() {
+        let transport = MockTransport::new();
+        let config = ChannelConfig {
+            ack_timeout: std::time::Duration::from_secs(30),
+            max_retries: 5,
+            ..Default::default()
+        };
+        let node = WakuA2ANode::with_config(
+            "configured",
+            "custom config node",
+            vec!["image".into()],
+            transport,
+            config,
+        );
+        assert_eq!(node.card.name, "configured");
+        assert_eq!(node.card.capabilities, vec!["image".to_string()]);
+        assert!(!node.pubkey().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_send_text_creates_and_sends_task() {
+        let transport = MockTransport::new();
+        let published = transport.published.clone();
+        let node =
+            WakuA2ANode::with_config("sender", "sender node", vec![], transport, fast_config());
+
+        let task = node.send_text("02deadbeef", "hello world").await.unwrap();
+        assert_eq!(task.from, node.pubkey());
+        assert_eq!(task.to, "02deadbeef");
+        assert_eq!(task.text(), Some("hello world"));
+        assert!(!published.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_respond_publishes_to_sender_topic() {
+        let transport = MockTransport::new();
+        let published = transport.published.clone();
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let spk = sender.pubkey().to_string();
+        let _ = sender.poll_tasks().await.unwrap();
+
+        // Sender sends task to receiver
+        let task = Task::new(&spk, &rpk, "question?");
+        sender.send_task(&task).await.unwrap();
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+
+        // Record message count before respond
+        let pre_count = published.lock().unwrap().len();
+        receiver.respond(&tasks[0], "answer!").await.unwrap();
+        let post_count = published.lock().unwrap().len();
+        assert!(post_count > pre_count, "respond should publish a message");
+
+        // Verify the response was published to the SENDER's task topic
+        let sender_topic = topics::task_topic(&spk);
+        let pubs = published.lock().unwrap();
+        let to_sender = pubs.iter().filter(|(t, _)| *t == sender_topic).count();
+        assert!(to_sender >= 1, "response should target sender's topic");
+    }
+
+    #[tokio::test]
+    async fn test_respond_to_encrypted_publishes() {
+        let transport = MockTransport::new();
+        let published = transport.published.clone();
+
+        let receiver = WakuA2ANode::new_encrypted(
+            "enc-receiver",
+            "encrypted receiver",
+            vec![],
+            transport.clone(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::new_encrypted("enc-sender", "encrypted sender", vec![], transport.clone());
+        let spk = sender.pubkey().to_string();
+        let _ = sender.poll_tasks().await.unwrap();
+
+        // Send encrypted task
+        let task = Task::new(&spk, &rpk, "secret question");
+        sender
+            .send_task_to(&task, Some(&receiver.card))
+            .await
+            .unwrap();
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text(), Some("secret question"));
+
+        // Respond with encryption — verify it publishes to sender's topic
+        let pre_count = published.lock().unwrap().len();
+        receiver
+            .respond_to(&tasks[0], "secret answer", Some(&sender.card))
+            .await
+            .unwrap();
+        let post_count = published.lock().unwrap().len();
+        assert!(post_count > pre_count, "encrypted respond should publish");
+
+        let sender_topic = topics::task_topic(&spk);
+        let pubs = published.lock().unwrap();
+        let to_sender = pubs.iter().filter(|(t, _)| *t == sender_topic).count();
+        assert!(
+            to_sender >= 1,
+            "encrypted response should target sender's topic"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_text_received_by_peer() {
+        let transport = MockTransport::new();
+
+        let alice = WakuA2ANode::with_config(
+            "alice",
+            "Alice",
+            vec!["text".into()],
+            transport.clone(),
+            fast_config(),
+        );
+        let apk = alice.pubkey().to_string();
+
+        let bob = WakuA2ANode::with_config(
+            "bob",
+            "Bob",
+            vec!["text".into()],
+            transport.clone(),
+            fast_config(),
+        );
+        let bpk = bob.pubkey().to_string();
+        let _ = bob.poll_tasks().await.unwrap(); // subscribe
+
+        let task = alice.send_text(&bpk, "hey bob").await.unwrap();
+        assert_eq!(task.from, apk);
+        assert_eq!(task.to, bpk);
+
+        let received = bob.poll_tasks().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].text(), Some("hey bob"));
+        assert_eq!(received[0].from, apk);
+    }
+
+    #[test]
+    fn test_find_peers_by_capability() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+
+        node.peer_map.update(&PresenceAnnouncement {
+            agent_id: "peer1".into(),
+            name: "img-agent".into(),
+            capabilities: vec!["image".into(), "text".into()],
+            waku_topic: "/lmao/1/tasks/peer1/proto".into(),
+            ttl_secs: 300,
+            signature: None,
+        });
+        node.peer_map.update(&PresenceAnnouncement {
+            agent_id: "peer2".into(),
+            name: "txt-agent".into(),
+            capabilities: vec!["text".into()],
+            waku_topic: "/lmao/1/tasks/peer2/proto".into(),
+            ttl_secs: 300,
+            signature: None,
+        });
+
+        assert_eq!(node.find_peers_by_capability("image").len(), 1);
+        assert_eq!(node.find_peers_by_capability("text").len(), 2);
+        assert_eq!(node.find_peers_by_capability("video").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_announce_presence_and_poll() {
+        let transport = MockTransport::new();
+
+        let alice = WakuA2ANode::with_config(
+            "alice",
+            "Alice agent",
+            vec!["text".into()],
+            transport.clone(),
+            fast_config(),
+        );
+        let bob = WakuA2ANode::with_config(
+            "bob",
+            "Bob agent",
+            vec!["code".into()],
+            transport.clone(),
+            fast_config(),
+        );
+
+        alice.announce_presence().await.unwrap();
+
+        let count = bob.poll_presence().await.unwrap();
+        assert_eq!(count, 1);
+
+        let peers = bob.peers().all_live();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].1.name, "alice");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_responses_ordering() {
+        let transport = MockTransport::new();
+
+        let server =
+            WakuA2ANode::with_config("server", "server", vec![], transport.clone(), fast_config());
+        let spk = server.pubkey().to_string();
+        let _ = server.poll_tasks().await.unwrap();
+
+        let client =
+            WakuA2ANode::with_config("client", "client", vec![], transport.clone(), fast_config());
+        let cpk = client.pubkey().to_string();
+        let _ = client.poll_tasks().await.unwrap();
+
+        for i in 0..3 {
+            let task = Task::new(&cpk, &spk, &format!("task-{i}"));
+            client.send_task(&task).await.unwrap();
+        }
+
+        let tasks = server.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 3);
+
+        for (i, task) in tasks.iter().enumerate() {
+            server.respond(task, &format!("done-{i}")).await.unwrap();
+        }
+
+        let responses = client.poll_tasks().await.unwrap();
+        assert_eq!(responses.len(), 3);
+    }
 }
