@@ -3,8 +3,9 @@ use clap::{Parser, Subcommand};
 use logos_messaging_a2a_core::Task;
 use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
+use std::collections::HashSet;
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(
     name = "logos-messaging-a2a",
     about = "A2A protocol over Waku decentralized transport"
@@ -18,7 +19,7 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum Commands {
     /// Agent management
     Agent {
@@ -30,9 +31,14 @@ enum Commands {
         #[command(subcommand)]
         action: TaskAction,
     },
+    /// Presence management (Waku presence broadcasts)
+    Presence {
+        #[command(subcommand)]
+        action: PresenceAction,
+    },
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum AgentAction {
     /// Run an agent that processes incoming tasks
     Run {
@@ -52,7 +58,7 @@ enum AgentAction {
     Bundle,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum TaskAction {
     /// Send a task to an agent
     Send {
@@ -69,6 +75,63 @@ enum TaskAction {
         #[arg(long)]
         id: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum PresenceAction {
+    /// Announce this agent on the presence topic
+    Announce {
+        /// Agent name
+        #[arg(long)]
+        name: String,
+        /// Comma-separated capabilities
+        #[arg(long, default_value = "text")]
+        capabilities: String,
+        /// TTL in seconds
+        #[arg(long, default_value = "300")]
+        ttl: u64,
+        /// Keep re-announcing every ttl/2 seconds
+        #[arg(long)]
+        repeat: bool,
+        /// Generate encrypted identity (X25519+ChaCha20-Poly1305)
+        #[arg(long)]
+        encrypt: bool,
+    },
+    /// Listen for presence announcements
+    Discover {
+        /// Filter by capability
+        #[arg(long)]
+        capability: Option<String>,
+        /// Keep listening instead of one-shot
+        #[arg(long)]
+        watch: bool,
+        /// How long to listen in one-shot mode (seconds)
+        #[arg(long, default_value = "10")]
+        timeout: u64,
+    },
+    /// Discover and list unique peers (deduplicated)
+    Peers {
+        /// Filter by capability
+        #[arg(long)]
+        capability: Option<String>,
+        /// Keep listening instead of one-shot
+        #[arg(long)]
+        watch: bool,
+        /// How long to listen in one-shot mode (seconds)
+        #[arg(long, default_value = "10")]
+        timeout: u64,
+    },
+}
+
+fn print_peer(agent_id: &str, info: &logos_messaging_a2a_node::presence::PeerInfo) {
+    let expired = if info.is_expired() { " [EXPIRED]" } else { "" };
+    println!("  Name:         {}", info.name);
+    println!("  Capabilities: {}", info.capabilities.join(", "));
+    println!("  Pubkey:       {}", agent_id);
+    println!("  Waku topic:   {}", info.waku_topic);
+    println!("  Last seen:    {}", info.last_seen);
+    println!("  Status:       TTL {}s{}", info.ttl_secs, expired);
+    println!();
 }
 
 #[tokio::main]
@@ -208,7 +271,381 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        Commands::Presence { action } => match action {
+            PresenceAction::Announce {
+                name,
+                capabilities,
+                ttl,
+                repeat,
+                encrypt,
+            } => {
+                let caps: Vec<String> = capabilities
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect();
+                let node = if encrypt {
+                    WakuA2ANode::new_encrypted(&name, &format!("{} agent", name), caps, transport)
+                } else {
+                    WakuA2ANode::new(&name, &format!("{} agent", name), caps, transport)
+                };
+
+                println!("Announcing presence: {}", node.card.name);
+                println!("Pubkey: {}", node.pubkey());
+                println!("TTL: {}s", ttl);
+                if encrypt {
+                    println!("Encryption: ENABLED");
+                }
+
+                match node.announce_presence_with_ttl(ttl).await {
+                    Ok(()) => println!("Presence announced."),
+                    Err(e) => {
+                        eprintln!("Announce failed (is nwaku running?): {}", e);
+                        return Ok(());
+                    }
+                }
+
+                if repeat {
+                    let interval = std::cmp::max(ttl / 2, 1);
+                    println!("Re-announcing every {}s (Ctrl-C to stop)\n", interval);
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                        match node.announce_presence_with_ttl(ttl).await {
+                            Ok(()) => println!("Re-announced presence."),
+                            Err(e) => eprintln!("Re-announce failed: {}", e),
+                        }
+                    }
+                }
+            }
+            PresenceAction::Discover {
+                capability,
+                watch,
+                timeout,
+            } => {
+                let node = WakuA2ANode::new("presence-discover", "temporary", vec![], transport);
+
+                if watch {
+                    println!("Watching for presence announcements (Ctrl-C to stop)...\n");
+                    let mut seen = HashSet::new();
+                    loop {
+                        match node.poll_presence().await {
+                            Ok(count) => {
+                                if count > 0 {
+                                    let peers = match &capability {
+                                        Some(cap) => node.find_peers_by_capability(cap),
+                                        None => node.peers().all_live(),
+                                    };
+                                    for (id, info) in &peers {
+                                        if seen.insert(format!("{}-{}", id, info.last_seen)) {
+                                            print_peer(id, info);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Poll error (is nwaku running?): {}", e);
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                } else {
+                    println!("Listening for presence announcements ({}s)...\n", timeout);
+                    let deadline =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+                    while tokio::time::Instant::now() < deadline {
+                        if let Err(e) = node.poll_presence().await {
+                            eprintln!("Poll error (is nwaku running?): {}", e);
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+
+                    let peers = match &capability {
+                        Some(cap) => node.find_peers_by_capability(cap),
+                        None => node.peers().all_live(),
+                    };
+
+                    if peers.is_empty() {
+                        println!("No peers found.");
+                    } else {
+                        println!("Found {} peer(s):\n", peers.len());
+                        for (id, info) in &peers {
+                            print_peer(id, info);
+                        }
+                    }
+                }
+            }
+            PresenceAction::Peers {
+                capability,
+                watch,
+                timeout,
+            } => {
+                let node = WakuA2ANode::new("presence-peers", "temporary", vec![], transport);
+
+                if watch {
+                    println!("Watching for unique peers (Ctrl-C to stop)...\n");
+                    let mut known_ids = HashSet::new();
+                    loop {
+                        match node.poll_presence().await {
+                            Ok(count) => {
+                                if count > 0 {
+                                    let peers = match &capability {
+                                        Some(cap) => node.find_peers_by_capability(cap),
+                                        None => node.peers().all_live(),
+                                    };
+                                    for (id, info) in &peers {
+                                        if known_ids.insert(id.clone()) {
+                                            print_peer(id, info);
+                                        }
+                                    }
+                                    println!("--- {} unique peer(s) ---\n", known_ids.len());
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Poll error (is nwaku running?): {}", e);
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                } else {
+                    println!("Discovering unique peers ({}s)...\n", timeout);
+                    let deadline =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+                    while tokio::time::Instant::now() < deadline {
+                        if let Err(e) = node.poll_presence().await {
+                            eprintln!("Poll error (is nwaku running?): {}", e);
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+
+                    let peers = match &capability {
+                        Some(cap) => node.find_peers_by_capability(cap),
+                        None => node.peers().all_live(),
+                    };
+
+                    if peers.is_empty() {
+                        println!("No peers found.");
+                    } else {
+                        println!("Found {} unique peer(s):\n", peers.len());
+                        for (id, info) in &peers {
+                            print_peer(id, info);
+                        }
+                    }
+                }
+            }
+        },
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    fn try_parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(args)
+    }
+
+    // ── Presence Announce ──
+
+    #[test]
+    fn presence_announce_requires_name() {
+        let err = try_parse(&["cli", "presence", "announce"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn presence_announce_with_name() {
+        let cli = try_parse(&["cli", "presence", "announce", "--name", "echo"]).unwrap();
+        match cli.command {
+            Commands::Presence {
+                action:
+                    PresenceAction::Announce {
+                        name,
+                        capabilities,
+                        ttl,
+                        repeat,
+                        encrypt,
+                    },
+            } => {
+                assert_eq!(name, "echo");
+                assert_eq!(capabilities, "text");
+                assert_eq!(ttl, 300);
+                assert!(!repeat);
+                assert!(!encrypt);
+            }
+            _ => panic!("expected Presence Announce"),
+        }
+    }
+
+    #[test]
+    fn presence_announce_all_flags() {
+        let cli = try_parse(&[
+            "cli",
+            "presence",
+            "announce",
+            "--name",
+            "bot",
+            "--capabilities",
+            "text,code",
+            "--ttl",
+            "600",
+            "--repeat",
+            "--encrypt",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Presence {
+                action:
+                    PresenceAction::Announce {
+                        name,
+                        capabilities,
+                        ttl,
+                        repeat,
+                        encrypt,
+                    },
+            } => {
+                assert_eq!(name, "bot");
+                assert_eq!(capabilities, "text,code");
+                assert_eq!(ttl, 600);
+                assert!(repeat);
+                assert!(encrypt);
+            }
+            _ => panic!("expected Presence Announce"),
+        }
+    }
+
+    // ── Presence Discover ──
+
+    #[test]
+    fn presence_discover_defaults() {
+        let cli = try_parse(&["cli", "presence", "discover"]).unwrap();
+        match cli.command {
+            Commands::Presence {
+                action:
+                    PresenceAction::Discover {
+                        capability,
+                        watch,
+                        timeout,
+                    },
+            } => {
+                assert!(capability.is_none());
+                assert!(!watch);
+                assert_eq!(timeout, 10);
+            }
+            _ => panic!("expected Presence Discover"),
+        }
+    }
+
+    #[test]
+    fn presence_discover_with_filters() {
+        let cli = try_parse(&[
+            "cli",
+            "presence",
+            "discover",
+            "--capability",
+            "code",
+            "--watch",
+            "--timeout",
+            "30",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Presence {
+                action:
+                    PresenceAction::Discover {
+                        capability,
+                        watch,
+                        timeout,
+                    },
+            } => {
+                assert_eq!(capability.as_deref(), Some("code"));
+                assert!(watch);
+                assert_eq!(timeout, 30);
+            }
+            _ => panic!("expected Presence Discover"),
+        }
+    }
+
+    // ── Presence Peers ──
+
+    #[test]
+    fn presence_peers_defaults() {
+        let cli = try_parse(&["cli", "presence", "peers"]).unwrap();
+        match cli.command {
+            Commands::Presence {
+                action:
+                    PresenceAction::Peers {
+                        capability,
+                        watch,
+                        timeout,
+                    },
+            } => {
+                assert!(capability.is_none());
+                assert!(!watch);
+                assert_eq!(timeout, 10);
+            }
+            _ => panic!("expected Presence Peers"),
+        }
+    }
+
+    #[test]
+    fn presence_peers_with_filters() {
+        let cli = try_parse(&[
+            "cli",
+            "presence",
+            "peers",
+            "--capability",
+            "summarize",
+            "--timeout",
+            "20",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Presence {
+                action:
+                    PresenceAction::Peers {
+                        capability,
+                        watch,
+                        timeout,
+                    },
+            } => {
+                assert_eq!(capability.as_deref(), Some("summarize"));
+                assert!(!watch);
+                assert_eq!(timeout, 20);
+            }
+            _ => panic!("expected Presence Peers"),
+        }
+    }
+
+    // ── Global --waku flag ──
+
+    #[test]
+    fn global_waku_flag_with_presence() {
+        let cli = try_parse(&[
+            "cli",
+            "--waku",
+            "http://custom:9090",
+            "presence",
+            "discover",
+        ])
+        .unwrap();
+        assert_eq!(cli.waku, "http://custom:9090");
+    }
+
+    // ── Existing commands still parse ──
+
+    #[test]
+    fn agent_run_still_parses() {
+        let cli = try_parse(&["cli", "agent", "run", "--name", "test"]).unwrap();
+        matches!(cli.command, Commands::Agent { .. });
+    }
+
+    #[test]
+    fn task_send_still_parses() {
+        let cli = try_parse(&["cli", "task", "send", "--to", "abc", "--text", "hello"]).unwrap();
+        matches!(cli.command, Commands::Task { .. });
+    }
 }
