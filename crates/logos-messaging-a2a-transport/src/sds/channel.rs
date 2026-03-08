@@ -1112,4 +1112,243 @@ mod edge_tests {
         );
         assert_eq!(bob.incoming_pending(), 1);
     }
+
+    #[test]
+    fn test_update_timestamp_adopts_higher() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        let before = ch.lamport_timestamp();
+
+        // Remote timestamp far in the future
+        let remote = before + 1_000_000;
+        ch.update_timestamp(remote);
+        let after = ch.lamport_timestamp();
+        assert!(
+            after > remote,
+            "should be max(local, remote) + 1 = remote + 1"
+        );
+    }
+
+    #[test]
+    fn test_update_timestamp_keeps_local_if_higher() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        let before = ch.lamport_timestamp();
+
+        // Remote timestamp far in the past
+        ch.update_timestamp(0);
+        let after = ch.lamport_timestamp();
+        assert!(after > before, "should be max(local, 0) + 1 = local + 1");
+    }
+
+    #[test]
+    fn test_dependencies_satisfied_empty_history() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        assert!(
+            ch.dependencies_satisfied(&[]),
+            "empty causal history should always be satisfied"
+        );
+    }
+
+    #[test]
+    fn test_dependencies_satisfied_all_seen() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        ch.bloom.set("dep-1");
+        ch.bloom.set("dep-2");
+
+        let history = vec![
+            HistoryEntry {
+                message_id: "dep-1".into(),
+                lamport_timestamp: 1,
+                retrieval_hint: None,
+            },
+            HistoryEntry {
+                message_id: "dep-2".into(),
+                lamport_timestamp: 2,
+                retrieval_hint: None,
+            },
+        ];
+        assert!(ch.dependencies_satisfied(&history));
+    }
+
+    #[test]
+    fn test_dependencies_satisfied_one_missing() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        ch.bloom.set("dep-1");
+
+        let history = vec![
+            HistoryEntry {
+                message_id: "dep-1".into(),
+                lamport_timestamp: 1,
+                retrieval_hint: None,
+            },
+            HistoryEntry {
+                message_id: "dep-2".into(),
+                lamport_timestamp: 2,
+                retrieval_hint: None,
+            },
+        ];
+        assert!(!ch.dependencies_satisfied(&history));
+    }
+
+    #[tokio::test]
+    async fn test_outgoing_buffer_grows_on_send() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        assert_eq!(ch.outgoing_pending(), 0);
+
+        ch.send("/test", b"msg1").await.unwrap();
+        assert_eq!(ch.outgoing_pending(), 1);
+
+        ch.send("/test", b"msg2").await.unwrap();
+        assert_eq!(ch.outgoing_pending(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_send_marks_message_as_seen() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        let msg = ch.send("/test", b"data").await.unwrap();
+        assert!(
+            ch.is_duplicate(&msg.message_id),
+            "sent message should be in bloom"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_causal_history_bounded() {
+        let config = ChannelConfig {
+            causal_history_size: 3,
+            ..Default::default()
+        };
+        let ch = MessageChannel::with_config(
+            "ch".into(),
+            "alice".into(),
+            InMemoryTransport::new(),
+            config,
+        );
+
+        // Send more messages than history size
+        for i in 0..10 {
+            ch.send("/test", format!("msg-{i}").as_bytes())
+                .await
+                .unwrap();
+        }
+
+        let history = ch.build_causal_history();
+        assert!(
+            history.len() <= 3,
+            "causal history should be bounded to config size"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_ack_publishes_to_correct_topic() {
+        let transport = InMemoryTransport::new();
+        let ch = MessageChannel::new("ch".into(), "alice".into(), transport.clone());
+
+        let ack_topic = "/lmao/1/ack/test-msg-id/proto";
+        let mut rx = transport.subscribe(ack_topic).await.unwrap();
+
+        ch.send_ack("/test", "test-msg-id").await.unwrap();
+
+        let ack_data = rx.recv().await.unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&ack_data).unwrap();
+        assert_eq!(val["message_id"], "test-msg-id");
+        assert_eq!(val["type"], "ack");
+    }
+
+    #[tokio::test]
+    async fn test_receive_ephemeral_sets_bloom() {
+        let ch = MessageChannel::new("ch".into(), "bob".into(), InMemoryTransport::new());
+        let eph = EphemeralMessage::new("ch", "alice", b"ephemeral");
+
+        let raw = serde_json::to_vec(&SdsMessage::Ephemeral(eph.clone())).unwrap();
+        ch.receive(&raw);
+
+        assert!(
+            ch.is_duplicate(&eph.message_id),
+            "ephemeral should be in bloom after receive"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_repair_requests_empty_list() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        let resent = ch.handle_repair_requests("/test", &[]).await.unwrap();
+        assert_eq!(resent, 0);
+    }
+
+    #[tokio::test]
+    async fn test_channel_accessors() {
+        let config = ChannelConfig {
+            max_retries: 5,
+            ..Default::default()
+        };
+        let ch = MessageChannel::with_config(
+            "my-chan".into(),
+            "my-sender".into(),
+            InMemoryTransport::new(),
+            config,
+        );
+        assert_eq!(ch.channel_id(), "my-chan");
+        assert_eq!(ch.sender_id(), "my-sender");
+        assert_eq!(ch.config().max_retries, 5);
+        // transport() should return a reference
+        let _t: &InMemoryTransport = ch.transport();
+    }
+
+    #[tokio::test]
+    async fn test_receive_and_repair_malformed_data() {
+        let ch = MessageChannel::new("ch".into(), "alice".into(), InMemoryTransport::new());
+        let result = ch
+            .receive_and_repair("/test", b"not valid json")
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_multiple_senders_interleaved() {
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("ch".into(), "alice".into(), transport.clone());
+        let bob = MessageChannel::new("ch".into(), "bob".into(), transport.clone());
+        let carol = MessageChannel::new("ch".into(), "carol".into(), transport.clone());
+
+        let topic = "/test";
+
+        // Alice and bob send independently (no causal deps between them)
+        let msg_a = alice.send(topic, b"from-alice").await.unwrap();
+        let msg_b = bob.send(topic, b"from-bob").await.unwrap();
+
+        // Carol receives both — no ordering dependency between them
+        let raw_a = serde_json::to_vec(&SdsMessage::Content(msg_a)).unwrap();
+        let raw_b = serde_json::to_vec(&SdsMessage::Content(msg_b)).unwrap();
+
+        let d1 = carol.receive(&raw_a);
+        assert_eq!(d1.len(), 1);
+        let d2 = carol.receive(&raw_b);
+        assert_eq!(d2.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_bloom_sync_from_independent_channel() {
+        // A sync from a channel that has seen a dependency should unblock buffered messages
+        let transport = InMemoryTransport::new();
+        let alice = MessageChannel::new("ch".into(), "alice".into(), transport.clone());
+        let bob = MessageChannel::new("ch".into(), "bob".into(), transport.clone());
+
+        let topic = "/test";
+        let msg1 = alice.send(topic, b"first").await.unwrap();
+        let msg2 = alice.send(topic, b"second").await.unwrap();
+
+        // Bob receives msg2 first — gets buffered
+        let raw2 = serde_json::to_vec(&SdsMessage::Content(msg2)).unwrap();
+        let delivered = bob.receive(&raw2);
+        assert_eq!(delivered.len(), 0);
+        assert_eq!(bob.incoming_pending(), 1);
+
+        // Now bob receives msg1 — should unblock msg2
+        let raw1 = serde_json::to_vec(&SdsMessage::Content(msg1)).unwrap();
+        let delivered = bob.receive(&raw1);
+        // msg1 delivered directly, msg2 unblocked from buffer
+        assert_eq!(delivered.len(), 2);
+        assert_eq!(bob.incoming_pending(), 0);
+    }
 }
