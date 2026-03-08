@@ -1,3 +1,6 @@
+use anyhow::{Context, Result};
+use k256::ecdsa::signature::Verifier;
+use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// Presence announcement broadcast on the well-known presence topic.
@@ -21,6 +24,57 @@ pub struct PresenceAnnouncement {
     /// fields, proving the announcement comes from the claimed `agent_id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<Vec<u8>>,
+}
+
+impl PresenceAnnouncement {
+    /// Deterministic serialization of all fields except `signature`.
+    ///
+    /// Produces a canonical JSON object with keys in a fixed order so that
+    /// both signer and verifier hash identical bytes.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        // Build canonical JSON manually with deterministic key order.
+        let canonical = serde_json::json!({
+            "agent_id": self.agent_id,
+            "capabilities": self.capabilities,
+            "name": self.name,
+            "ttl_secs": self.ttl_secs,
+            "waku_topic": self.waku_topic,
+        });
+        serde_json::to_vec(&canonical).expect("canonical JSON serialization cannot fail")
+    }
+
+    /// Sign this announcement with a secp256k1 signing key.
+    ///
+    /// Computes `canonical_bytes()` and signs with the provided key,
+    /// setting the `signature` field to the DER-encoded signature bytes.
+    pub fn sign(&mut self, signing_key: &SigningKey) -> Result<()> {
+        use k256::ecdsa::signature::Signer;
+        let message = self.canonical_bytes();
+        let sig: Signature = signing_key.sign(&message);
+        self.signature = Some(sig.to_der().as_bytes().to_vec());
+        Ok(())
+    }
+
+    /// Verify the signature against `agent_id` (compressed secp256k1 pubkey hex).
+    ///
+    /// Returns `Ok(())` if the signature is present and valid, or an error
+    /// describing why verification failed.
+    pub fn verify(&self) -> Result<()> {
+        let sig_bytes = self.signature.as_ref().context("missing signature")?;
+
+        let pubkey_bytes = hex::decode(&self.agent_id).context("agent_id is not valid hex")?;
+        let verifying_key = VerifyingKey::from_sec1_bytes(&pubkey_bytes)
+            .context("agent_id is not a valid secp256k1 public key")?;
+
+        let signature = Signature::from_der(sig_bytes).context("signature is not valid DER")?;
+
+        let message = self.canonical_bytes();
+        verifying_key
+            .verify(&message, &signature)
+            .context("signature verification failed")?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -57,5 +111,114 @@ mod tests {
         assert!(json.contains("signature"));
         let deserialized: PresenceAnnouncement = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.signature, Some(vec![1, 2, 3, 4]));
+    }
+
+    fn make_signing_key() -> SigningKey {
+        SigningKey::random(&mut k256::elliptic_curve::rand_core::OsRng)
+    }
+
+    fn pubkey_hex(key: &SigningKey) -> String {
+        hex::encode(key.verifying_key().to_encoded_point(true).as_bytes())
+    }
+
+    fn make_signed_announcement(key: &SigningKey) -> PresenceAnnouncement {
+        let mut ann = PresenceAnnouncement {
+            agent_id: pubkey_hex(key),
+            name: "test-agent".to_string(),
+            capabilities: vec!["echo".to_string(), "summarize".to_string()],
+            waku_topic: "/lmao/1/task/test/proto".to_string(),
+            ttl_secs: 300,
+            signature: None,
+        };
+        ann.sign(key).unwrap();
+        ann
+    }
+
+    #[test]
+    fn test_sign_verify_roundtrip() {
+        let key = make_signing_key();
+        let ann = make_signed_announcement(&key);
+        assert!(ann.signature.is_some());
+        ann.verify().unwrap();
+    }
+
+    #[test]
+    fn test_canonical_bytes_deterministic() {
+        let key = make_signing_key();
+        let ann = make_signed_announcement(&key);
+        let bytes1 = ann.canonical_bytes();
+        let bytes2 = ann.canonical_bytes();
+        assert_eq!(bytes1, bytes2);
+    }
+
+    #[test]
+    fn test_canonical_bytes_excludes_signature() {
+        let key = make_signing_key();
+        let ann = make_signed_announcement(&key);
+        let canonical = String::from_utf8(ann.canonical_bytes()).unwrap();
+        assert!(!canonical.contains("signature"));
+    }
+
+    #[test]
+    fn test_tampered_name_rejected() {
+        let key = make_signing_key();
+        let mut ann = make_signed_announcement(&key);
+        ann.name = "evil-agent".to_string();
+        assert!(ann.verify().is_err());
+    }
+
+    #[test]
+    fn test_tampered_capabilities_rejected() {
+        let key = make_signing_key();
+        let mut ann = make_signed_announcement(&key);
+        ann.capabilities.push("admin".to_string());
+        assert!(ann.verify().is_err());
+    }
+
+    #[test]
+    fn test_tampered_agent_id_rejected() {
+        let key = make_signing_key();
+        let other_key = make_signing_key();
+        let mut ann = make_signed_announcement(&key);
+        // Swap agent_id to a different key — signature should not verify
+        ann.agent_id = pubkey_hex(&other_key);
+        assert!(ann.verify().is_err());
+    }
+
+    #[test]
+    fn test_missing_signature_rejected() {
+        let key = make_signing_key();
+        let mut ann = make_signed_announcement(&key);
+        ann.signature = None;
+        let err = ann.verify().unwrap_err();
+        assert!(err.to_string().contains("missing signature"));
+    }
+
+    #[test]
+    fn test_wrong_key_signature_rejected() {
+        let key = make_signing_key();
+        let wrong_key = make_signing_key();
+        let mut ann = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key),
+            name: "test".to_string(),
+            capabilities: vec![],
+            waku_topic: "/test/proto".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        // Sign with wrong key
+        ann.sign(&wrong_key).unwrap();
+        assert!(ann.verify().is_err());
+    }
+
+    #[test]
+    fn test_corrupted_signature_rejected() {
+        let key = make_signing_key();
+        let mut ann = make_signed_announcement(&key);
+        // Corrupt the signature bytes
+        if let Some(ref mut sig) = ann.signature {
+            sig[0] ^= 0xff;
+        }
+        assert!(ann.verify().is_err());
     }
 }

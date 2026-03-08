@@ -345,14 +345,17 @@ impl<T: Transport> WakuA2ANode<T> {
 
     /// Broadcast a presence announcement with a custom TTL.
     pub async fn announce_presence_with_ttl(&self, ttl_secs: u64) -> Result<()> {
-        let announcement = PresenceAnnouncement {
+        let mut announcement = PresenceAnnouncement {
             agent_id: self.pubkey().to_string(),
             name: self.card.name.clone(),
             capabilities: self.card.capabilities.clone(),
             waku_topic: topics::task_topic(self.pubkey()),
             ttl_secs,
-            signature: None, // TODO: sign with secp256k1 key
+            signature: None,
         };
+        announcement
+            .sign(&self.signing_key)
+            .context("Failed to sign presence announcement")?;
         let envelope = A2AEnvelope::Presence(announcement);
         let payload =
             serde_json::to_vec(&envelope).context("Failed to serialize presence announcement")?;
@@ -383,6 +386,15 @@ impl<T: Transport> WakuA2ANode<T> {
         while let Ok(msg) = rx.try_recv() {
             if let Ok(A2AEnvelope::Presence(ann)) = serde_json::from_slice::<A2AEnvelope>(&msg) {
                 if ann.agent_id != self.pubkey() {
+                    if let Err(e) = ann.verify() {
+                        eprintln!(
+                            "[node] Presence rejected (invalid signature): {} ({}) — {}",
+                            ann.name,
+                            &ann.agent_id[..8.min(ann.agent_id.len())],
+                            e
+                        );
+                        continue;
+                    }
                     self.peer_map.update(&ann);
                     eprintln!(
                         "[node] Presence received: {} ({}) caps={:?}",
@@ -2152,5 +2164,123 @@ mod registry_tests {
         // No registry set — should still work, just return Waku results
         let all = node.discover_all().await.unwrap();
         assert!(all.is_empty()); // no Waku broadcasts either
+    }
+}
+
+#[cfg(test)]
+mod signed_presence_tests {
+    use super::*;
+    use logos_messaging_a2a_transport::memory::InMemoryTransport;
+
+    fn make_node_with_transport(
+        name: &str,
+        transport: InMemoryTransport,
+    ) -> WakuA2ANode<InMemoryTransport> {
+        WakuA2ANode::new(
+            name,
+            &format!("{name} agent"),
+            vec!["test".into()],
+            transport,
+        )
+    }
+
+    #[tokio::test]
+    async fn signed_announcement_accepted_by_peer() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        // Alice announces (signed automatically)
+        alice.announce_presence().await.unwrap();
+
+        // Bob polls — should accept the signed announcement
+        let count = bob.poll_presence().await.unwrap();
+        assert_eq!(count, 1);
+
+        let peers = bob.peers().all_live();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].1.name, "alice");
+    }
+
+    #[tokio::test]
+    async fn unsigned_announcement_rejected() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        // Inject an unsigned announcement directly (bypassing sign)
+        let unsigned = PresenceAnnouncement {
+            agent_id: alice.pubkey().to_string(),
+            name: "alice".to_string(),
+            capabilities: vec!["test".into()],
+            waku_topic: topics::task_topic(alice.pubkey()),
+            ttl_secs: 300,
+            signature: None,
+        };
+        let envelope = A2AEnvelope::Presence(unsigned);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(topics::PRESENCE, &payload).await.unwrap();
+
+        // Bob should reject the unsigned announcement
+        let count = bob.poll_presence().await.unwrap();
+        assert_eq!(count, 0);
+        assert!(bob.peers().all_live().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tampered_announcement_rejected() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        // Create a properly signed announcement, then tamper with it
+        let mut ann = PresenceAnnouncement {
+            agent_id: alice.pubkey().to_string(),
+            name: "alice".to_string(),
+            capabilities: vec!["test".into()],
+            waku_topic: topics::task_topic(alice.pubkey()),
+            ttl_secs: 300,
+            signature: None,
+        };
+        ann.sign(alice.signing_key()).unwrap();
+
+        // Tamper with the name after signing
+        ann.name = "evil-alice".to_string();
+
+        let envelope = A2AEnvelope::Presence(ann);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(topics::PRESENCE, &payload).await.unwrap();
+
+        // Bob should reject the tampered announcement
+        let count = bob.poll_presence().await.unwrap();
+        assert_eq!(count, 0);
+        assert!(bob.peers().all_live().is_empty());
+    }
+
+    #[tokio::test]
+    async fn wrong_key_announcement_rejected() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        // Sign with bob's key but claim to be alice
+        let mut ann = PresenceAnnouncement {
+            agent_id: alice.pubkey().to_string(),
+            name: "alice".to_string(),
+            capabilities: vec!["test".into()],
+            waku_topic: topics::task_topic(alice.pubkey()),
+            ttl_secs: 300,
+            signature: None,
+        };
+        ann.sign(bob.signing_key()).unwrap();
+
+        let envelope = A2AEnvelope::Presence(ann);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(topics::PRESENCE, &payload).await.unwrap();
+
+        // Bob should reject — signature doesn't match agent_id
+        let count = bob.poll_presence().await.unwrap();
+        assert_eq!(count, 0);
+        assert!(bob.peers().all_live().is_empty());
     }
 }
