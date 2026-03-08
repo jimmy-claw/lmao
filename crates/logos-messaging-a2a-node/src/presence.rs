@@ -263,4 +263,134 @@ mod tests {
         assert!(!info.is_expired_at(1300));
         assert!(info.is_expired_at(1301));
     }
+
+    // --- Additional edge case coverage ---
+
+    #[test]
+    fn test_peer_map_get_nonexistent_returns_none() {
+        let map = PeerMap::new();
+        assert!(map.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_peer_map_find_by_capability_empty_map() {
+        let map = PeerMap::new();
+        assert!(map.find_by_capability("anything").is_empty());
+    }
+
+    #[test]
+    fn test_peer_map_all_live_empty_map() {
+        let map = PeerMap::new();
+        assert!(map.all_live().is_empty());
+    }
+
+    #[test]
+    fn test_evict_expired_on_empty_map() {
+        let map = PeerMap::new();
+        assert_eq!(map.evict_expired(), 0);
+    }
+
+    #[test]
+    fn test_evict_expired_all_alive() {
+        let map = PeerMap::new();
+        map.update(&make_announcement("a", "a", vec!["x"], 9999));
+        map.update(&make_announcement("b", "b", vec!["y"], 9999));
+        assert_eq!(map.evict_expired(), 0);
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn test_evict_expired_all_dead() {
+        let map = PeerMap::new();
+        map.update(&make_announcement("a", "a", vec!["x"], 0));
+        map.update(&make_announcement("b", "b", vec!["y"], 0));
+        assert_eq!(map.evict_expired(), 2);
+        assert_eq!(map.len(), 0);
+    }
+
+    #[test]
+    fn test_peer_info_is_expired_at_boundary() {
+        let info = PeerInfo {
+            name: "test".to_string(),
+            capabilities: vec![],
+            waku_topic: "".to_string(),
+            ttl_secs: 300,
+            last_seen: 1000,
+        };
+        // Exactly at TTL boundary: 1000 + 300 = 1300, elapsed = 300, not > 300
+        assert!(!info.is_expired_at(1300));
+        // One second past: elapsed = 301 > 300
+        assert!(info.is_expired_at(1301));
+    }
+
+    #[test]
+    fn test_peer_info_zero_ttl_always_expired() {
+        let info = PeerInfo {
+            name: "test".to_string(),
+            capabilities: vec![],
+            waku_topic: "".to_string(),
+            ttl_secs: 0,
+            last_seen: 1000,
+        };
+        assert!(info.is_expired_at(1000));
+        assert!(info.is_expired_at(0));
+    }
+
+    #[test]
+    fn test_peer_info_is_expired_at_saturating_sub() {
+        // now_secs < last_seen — should not panic or wrap
+        let info = PeerInfo {
+            name: "test".to_string(),
+            capabilities: vec![],
+            waku_topic: "".to_string(),
+            ttl_secs: 300,
+            last_seen: 1000,
+        };
+        // now_secs = 500 < last_seen = 1000, saturating_sub gives 0, 0 <= 300
+        assert!(!info.is_expired_at(500));
+    }
+
+    #[test]
+    fn test_update_same_peer_overwrites() {
+        let map = PeerMap::new();
+        map.update(&make_announcement("peer1", "name-v1", vec!["cap1"], 300));
+        assert_eq!(map.get("peer1").unwrap().name, "name-v1");
+
+        map.update(&make_announcement(
+            "peer1",
+            "name-v2",
+            vec!["cap1", "cap2"],
+            600,
+        ));
+        let info = map.get("peer1").unwrap();
+        assert_eq!(info.name, "name-v2");
+        assert_eq!(info.capabilities, vec!["cap1", "cap2"]);
+        assert_eq!(info.ttl_secs, 600);
+        assert_eq!(map.len(), 1); // still one entry
+    }
+
+    #[test]
+    fn test_find_by_capability_with_empty_capability_string() {
+        let map = PeerMap::new();
+        map.update(&make_announcement("a", "a", vec![""], 9999));
+        // Should find it when searching for empty string
+        assert_eq!(map.find_by_capability("").len(), 1);
+        assert!(map.find_by_capability("text").is_empty());
+    }
+
+    #[test]
+    fn test_peer_map_many_peers() {
+        let map = PeerMap::new();
+        for i in 0..100 {
+            map.update(&make_announcement(
+                &format!("peer{i}"),
+                &format!("agent-{i}"),
+                vec!["common"],
+                9999,
+            ));
+        }
+        assert_eq!(map.len(), 100);
+        assert_eq!(map.all_live().len(), 100);
+        assert_eq!(map.find_by_capability("common").len(), 100);
+    }
 }
