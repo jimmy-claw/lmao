@@ -7,11 +7,15 @@
 │                        Application Layer                             │
 │                                                                      │
 │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐            │
-│  │  logos-messaging-a2a-cli│   │  echo_agent  │   │  ping_pong   │            │
+│  │  lmao-cli    │   │  echo_agent  │   │  ping_pong   │            │
 │  │  (CLI binary) │   │  (example)   │   │  (example)   │            │
 │  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘            │
 │         │                  │                   │                     │
-│         └──────────────────┼───────────────────┘                    │
+│  ┌──────┴──────┐    ┌──────┴──────────────────┴──────┐             │
+│  │  lmao-mcp   │    │         lmao-ffi / ffi         │             │
+│  │  (MCP bridge)│    │  (C/Swift/Kotlin bindings)     │             │
+│  └──────┬───────┘   └──────┬─────────────────────────┘             │
+│         └──────────────────┼───────────────────────────              │
 │                            │                                         │
 ├────────────────────────────┼─────────────────────────────────────────┤
 │                     Node Layer                                       │
@@ -24,20 +28,36 @@
 │  │  • send_task()    — send task with SDS reliability      │         │
 │  │  • poll_tasks()   — receive incoming tasks              │         │
 │  │  • respond()      — reply to a task                     │         │
+│  │  • presence       — PeerMap with heartbeat broadcasts   │         │
 │  │                                                         │         │
 │  │  Identity: secp256k1 keypair                            │         │
-│  └─────────────────────────┬──────────────────────────────┘         │
-│                            │                                         │
-├────────────────────────────┼─────────────────────────────────────────┤
+│  │  Integrates: crypto, execution, storage, transport      │         │
+│  └────────┬──────────┬──────────┬──────────┬──────────────┘         │
+│           │          │          │          │                          │
+├───────────┼──────────┼──────────┼──────────┼─────────────────────────┤
+│           │          │          │          │                          │
+│  ┌────────┴───┐ ┌────┴─────┐ ┌─┴────────┐ │                        │
+│  │   Crypto   │ │Execution │ │  Storage  │ │                        │
+│  │            │ │          │ │           │ │                        │
+│  │ X25519 DH  │ │ Status   │ │ Codex    │ │                        │
+│  │ ChaCha20   │ │ Network  │ │ REST API │ │                        │
+│  │ Poly1305   │ │ (EVM)    │ │          │ │                        │
+│  │            │ │ LEZ stub │ │ LogosCore│ │                        │
+│  │ IntroBundle│ │          │ │ backend  │ │                        │
+│  └────────────┘ └──────────┘ └──────────┘ │                        │
+│                                            │                         │
+├────────────────────────────────────────────┼─────────────────────────┤
 │                  Reliability Layer (minimal-SDS)                      │
 │                                                                      │
-│  ┌─────────────────────────┴──────────────────────────────┐         │
+│  ┌─────────────────────────────────────────┴──────────────┐         │
 │  │              SdsTransport<T: WakuTransport>             │         │
 │  │                                                         │         │
 │  │  • publish_reliable() — retransmit up to 3x             │         │
 │  │  • send_ack()         — acknowledge receipt             │         │
 │  │  • poll_dedup()       — deduplicate by message ID       │         │
-│  │  • is_duplicate()     — bloom filter (HashSet in v0.1)  │         │
+│  │  • causal ordering    — lamport clocks + buffering      │         │
+│  │  • bloom filter dedup — probabilistic duplicate detect  │         │
+│  │  • batch ACK          — coalesce acknowledgements       │         │
 │  │                                                         │         │
 │  │  ACK timeout: 10s | Max retries: 3                      │         │
 │  └─────────────────────────┬──────────────────────────────┘         │
@@ -55,8 +75,8 @@
 │  ├─────────────────────────────────────────────────────────┤         │
 │  │                                                         │         │
 │  │  NwakuRestTransport        LogosDeliveryTransport       │         │
-│  │  (v0.1 — REST fallback)    (TODO — FFI via libwaku)     │         │
-│  │  http://localhost:8645     waku-bindings crate           │         │
+│  │  (v0.1 — REST fallback)    (planned — issue #57)        │         │
+│  │  http://localhost:8645     logos-delivery-rust-bindings  │         │
 │  │                                                         │         │
 │  └─────────────────────────┬──────────────────────────────┘         │
 │                            │                                         │
@@ -67,9 +87,10 @@
 │  │              Waku Relay (pub/sub)                        │         │
 │  │                                                         │         │
 │  │  Content Topics:                                        │         │
-│  │  /logos-messaging-a2a/1/discovery/proto     AgentCard broadcasts   │         │
-│  │  /logos-messaging-a2a/1/task/{pubkey}/proto Task inbox per agent   │         │
-│  │  /logos-messaging-a2a/1/ack/{msg_id}/proto  SDS acknowledgements   │         │
+│  │  /lmao/1/discovery/proto        AgentCard broadcasts    │         │
+│  │  /lmao/1/presence/proto         Presence heartbeats     │         │
+│  │  /lmao/1/task/{pubkey}/proto    Task inbox per agent    │         │
+│  │  /lmao/1/ack/{msg_id}/proto     SDS acknowledgements   │         │
 │  │                                                         │         │
 │  └─────────────────────────────────────────────────────────┘         │
 │                                                                      │
@@ -80,6 +101,42 @@
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+## Crate Dependency Graph
+
+```
+logos-messaging-a2a (workspace root)
+│
+├── logos-messaging-a2a-core           A2A protocol types (AgentCard, Task, etc.)
+│   └── depends on: crypto
+│
+├── logos-messaging-a2a-crypto         X25519 ECDH + ChaCha20-Poly1305 encryption
+│   └── no internal deps
+│
+├── logos-messaging-a2a-transport      Waku transport trait + SDS reliability layer
+│   └── no internal deps
+│
+├── logos-messaging-a2a-storage        Storage backends (Codex REST, LogosCore)
+│   └── no internal deps
+│
+├── logos-messaging-a2a-execution      On-chain execution (Status Network, LEZ stub)
+│   └── depends on: core
+│
+├── logos-messaging-a2a-node           WakuA2ANode — main orchestrator
+│   └── depends on: core, crypto, transport, storage, execution
+│
+├── logos-messaging-a2a-cli            CLI binary
+│   └── depends on: core, crypto, transport, node
+│
+├── logos-messaging-a2a-mcp            MCP bridge (stdio server for Claude/Cursor)
+│   └── depends on: core, transport, node
+│
+├── logos-messaging-a2a-ffi            C-ABI FFI bindings (UniFFI)
+│   └── depends on: core, crypto, transport, node
+│
+└── lmao-ffi                           Thin C FFI wrapper
+    └── depends on: core, transport, node
+```
+
 ## A2A Types (logos-messaging-a2a-core)
 
 ```
@@ -88,23 +145,59 @@ AgentCard
 ├── description: String
 ├── version: String
 ├── capabilities: Vec<String>
-└── public_key: String          (secp256k1 compressed hex)
+├── public_key: String              (secp256k1 compressed hex)
+└── intro_bundle: Option<IntroBundle>
 
 Task
-├── id: String                  (UUID v4)
-├── from: String                (sender pubkey)
-├── to: String                  (recipient pubkey)
-├── state: TaskState            (Submitted → Working → Completed/Failed)
+├── id: String                      (UUID v4)
+├── from: String                    (sender pubkey)
+├── to: String                      (recipient pubkey)
+├── state: TaskState                (Submitted → Working → Completed/Failed)
 ├── message: Message
-│   ├── role: String            ("user" or "agent")
+│   ├── role: String                ("user" or "agent")
 │   └── parts: Vec<Part>
 │       └── Part::Text { text }
-└── result: Option<Message>     (agent's response)
+└── result: Option<Message>         (agent's response)
 
 A2AEnvelope (wire format)
 ├── AgentCard(AgentCard)
 ├── Task(Task)
-└── Ack { message_id }
+├── Ack { message_id }
+└── Presence(PresenceAnnounce)
+```
+
+## Crypto Layer
+
+```
+AgentIdentity (X25519)
+├── generate()                      → random keypair
+├── public_key_hex()                → hex-encoded pubkey
+├── shared_key(their_pubkey)        → SessionKey via ECDH
+└── from_hex(secret)                → reconstruct from secret
+
+SessionKey (ChaCha20-Poly1305)
+├── encrypt(plaintext)              → EncryptedPayload (nonce + ciphertext)
+└── decrypt(payload)                → plaintext bytes
+
+IntroBundle
+├── agent_pubkey: String
+└── version: String
+```
+
+## Presence Discovery
+
+```
+Agent A                    Waku Network                  Agent B
+  │                            │                            │
+  │── PresenceAnnounce ───────▶│ /lmao/1/presence/proto     │
+  │   { pubkey, name,          │                            │
+  │     capabilities,          │                            │
+  │     timestamp }            │                            │
+  │                            │◀── PresenceAnnounce ───────│
+  │                            │                            │
+  │   PeerMap tracks all       │                            │
+  │   seen agents with TTL     │                            │
+  │   (auto-expire stale)      │                            │
 ```
 
 ## Message Flow
@@ -112,29 +205,56 @@ A2AEnvelope (wire format)
 ```
 Agent A                    Waku Network                  Agent B
   │                            │                            │
-  │── announce(AgentCard) ────▶│ /discovery/proto           │
+  │── announce(AgentCard) ────▶│ /lmao/1/discovery/proto    │
   │                            │◀── announce(AgentCard) ────│
   │                            │                            │
   │── discover() ─────────────▶│                            │
   │◀── [AgentCard B] ─────────│                            │
   │                            │                            │
-  │── send_task(Task) ────────▶│ /task/{B.pubkey}/proto     │
+  │── send_task(Task) ────────▶│ /lmao/1/task/{B}/proto     │
   │                            │──────── poll_tasks() ─────▶│
   │                            │                            │
   │   (SDS: wait for ACK)      │◀── send_ack(task.id) ─────│
   │◀── ACK on /ack/{id}/proto─│                            │
   │                            │                            │
   │                            │◀── respond(result) ───────│
-  │◀── poll_tasks() ──────────│ /task/{A.pubkey}/proto     │
+  │◀── poll_tasks() ──────────│ /lmao/1/task/{A}/proto     │
   │                            │                            │
 ```
 
-## Crate Dependency Graph
+## x402 Payment Flow
 
 ```
-logos-messaging-a2a (root)
-├── logos-messaging-a2a-core          (no internal deps)
-├── logos-messaging-a2a-transport     (no internal deps)
-├── logos-messaging-a2a-node          (depends on core + transport)
-└── logos-messaging-a2a-cli           (depends on core + transport + node)
+Agent A (client)           Waku Network            Agent B (paywall)
+  │                            │                            │
+  │── send_task(request) ─────▶│───────────────────────────▶│
+  │                            │                            │
+  │◀── 402 PaymentRequired ───│◀───────────────────────────│
+  │   { token_contract,       │                            │
+  │     recipient, amount,    │                            │
+  │     network }             │                            │
+  │                            │                            │
+  │── ERC-20 transfer ────────▶│  (on-chain via execution)  │
+  │                            │                            │
+  │── send_task(request        │                            │
+  │   + payment_tx_hash) ────▶│───────────────────────────▶│
+  │                            │                     verify │
+  │                            │                   transfer │
+  │◀── Task(Completed) ───────│◀───────────────────────────│
+```
+
+## Storage Offload Flow
+
+```
+Agent A                    Codex Node               Agent B
+  │                            │                       │
+  │  payload > 100KB           │                       │
+  │── upload(data) ───────────▶│                       │
+  │◀── CID ───────────────────│                       │
+  │                            │                       │
+  │── Task { storage_cid }    │                       │
+  │   via Waku ───────────────┼──────────────────────▶│
+  │                            │                       │
+  │                            │◀── download(CID) ────│
+  │                            │── data ──────────────▶│
 ```
