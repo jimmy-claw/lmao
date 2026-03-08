@@ -1,4 +1,4 @@
-/// Waku content topic helpers.
+//! Waku content topic helpers.
 
 pub const DISCOVERY: &str = "/waku-a2a/1/discovery/proto";
 
@@ -21,14 +21,8 @@ mod tests {
     #[test]
     fn test_topics() {
         assert_eq!(DISCOVERY, "/waku-a2a/1/discovery/proto");
-        assert_eq!(
-            task_topic("02abcdef"),
-            "/waku-a2a/1/task/02abcdef/proto"
-        );
-        assert_eq!(
-            ack_topic("msg-123"),
-            "/waku-a2a/1/ack/msg-123/proto"
-        );
+        assert_eq!(task_topic("02abcdef"), "/waku-a2a/1/task/02abcdef/proto");
+        assert_eq!(ack_topic("msg-123"), "/waku-a2a/1/ack/msg-123/proto");
     }
 
     #[test]
