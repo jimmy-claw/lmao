@@ -361,3 +361,165 @@ mod tests {
         assert_eq!(topics::PRESENCE, "/lmao/1/presence/proto");
     }
 }
+
+#[cfg(test)]
+mod extended_tests {
+    use super::*;
+
+    #[test]
+    fn test_new_in_session() {
+        let task = Task::new_in_session("02aa", "03bb", "hello", "session-42");
+        assert_eq!(task.from, "02aa");
+        assert_eq!(task.to, "03bb");
+        assert_eq!(task.text(), Some("hello"));
+        assert_eq!(task.session_id, Some("session-42".to_string()));
+        assert_eq!(task.state, TaskState::Submitted);
+    }
+
+    #[test]
+    fn test_respond_preserves_session_id() {
+        let task = Task::new_in_session("02aa", "03bb", "question", "sess-1");
+        let response = task.respond("answer");
+        assert_eq!(response.session_id, Some("sess-1".to_string()));
+        assert_eq!(response.from, "03bb");
+        assert_eq!(response.to, "02aa");
+    }
+
+    #[test]
+    fn test_result_text_none_when_no_result() {
+        let task = Task::new("02aa", "03bb", "hello");
+        assert!(task.result_text().is_none());
+    }
+
+    #[test]
+    fn test_task_optional_fields_absent_in_json() {
+        let task = Task::new("02aa", "03bb", "minimal");
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(!json.contains("session_id"));
+        assert!(!json.contains("payload_cid"));
+        assert!(!json.contains("payment_tx"));
+        assert!(!json.contains("payment_amount"));
+    }
+
+    #[test]
+    fn test_task_optional_fields_roundtrip() {
+        let mut task = Task::new("02aa", "03bb", "full");
+        task.session_id = Some("sess-1".to_string());
+        task.payload_cid = Some("zQm123".to_string());
+        task.payment_tx = Some("0xdeadbeef".to_string());
+        task.payment_amount = Some(42);
+
+        let json = serde_json::to_string(&task).unwrap();
+        let deserialized: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.session_id, Some("sess-1".to_string()));
+        assert_eq!(deserialized.payload_cid, Some("zQm123".to_string()));
+        assert_eq!(deserialized.payment_tx, Some("0xdeadbeef".to_string()));
+        assert_eq!(deserialized.payment_amount, Some(42));
+    }
+
+    #[test]
+    fn test_backward_compat_task_without_optional_fields() {
+        let json = r#"{"id":"abc","from":"02aa","to":"03bb","state":"submitted","message":{"role":"user","parts":[{"type":"text","text":"hello"}]}}"#;
+        let task: Task = serde_json::from_str(json).unwrap();
+        assert_eq!(task.id, "abc");
+        assert!(task.session_id.is_none());
+        assert!(task.payload_cid.is_none());
+        assert!(task.payment_tx.is_none());
+        assert!(task.payment_amount.is_none());
+        assert!(task.result.is_none());
+    }
+
+    #[test]
+    fn test_task_unique_ids() {
+        let t1 = Task::new("02aa", "03bb", "hello");
+        let t2 = Task::new("02aa", "03bb", "hello");
+        assert_ne!(t1.id, t2.id, "each task should get a unique UUID");
+    }
+
+    #[test]
+    fn test_presence_with_signature_roundtrip() {
+        let ann = PresenceAnnouncement {
+            agent_id: "02abcdef".to_string(),
+            name: "signed".to_string(),
+            capabilities: vec![],
+            waku_topic: "/test/proto".to_string(),
+            ttl_secs: 60,
+            signature: Some(vec![1, 2, 3, 4]),
+        };
+        let json = serde_json::to_string(&ann).unwrap();
+        assert!(json.contains("signature"));
+        let deserialized: PresenceAnnouncement = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.signature, Some(vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn test_task_state_deserialization() {
+        let state: TaskState = serde_json::from_str("\"input_required\"").unwrap();
+        assert_eq!(state, TaskState::InputRequired);
+        let state: TaskState = serde_json::from_str("\"cancelled\"").unwrap();
+        assert_eq!(state, TaskState::Cancelled);
+    }
+
+    #[test]
+    fn test_part_text_tagged_serialization() {
+        let part = Part::Text {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(json.contains("\"type\":\"text\""));
+        let deserialized: Part = serde_json::from_str(&json).unwrap();
+        assert_eq!(part, deserialized);
+    }
+
+    #[test]
+    fn test_message_multi_part() {
+        let msg = Message {
+            role: "user".to_string(),
+            parts: vec![
+                Part::Text {
+                    text: "first".to_string(),
+                },
+                Part::Text {
+                    text: "second".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.parts.len(), 2);
+    }
+
+    #[test]
+    fn test_agent_card_empty_capabilities() {
+        let card = AgentCard {
+            name: "bare".to_string(),
+            description: "no caps".to_string(),
+            version: "0.1.0".to_string(),
+            capabilities: vec![],
+            public_key: "02dead".to_string(),
+            intro_bundle: None,
+        };
+        let json = serde_json::to_string(&card).unwrap();
+        let deserialized: AgentCard = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.capabilities.is_empty());
+    }
+
+    #[test]
+    fn test_respond_clears_payment_fields() {
+        let mut task = Task::new("02aa", "03bb", "pay me");
+        task.payment_tx = Some("0xabc".to_string());
+        task.payment_amount = Some(100);
+        let response = task.respond("done");
+        // respond() creates a new task — payment fields should be None
+        assert!(response.payment_tx.is_none());
+        assert!(response.payment_amount.is_none());
+    }
+
+    #[test]
+    fn test_respond_clears_payload_cid() {
+        let mut task = Task::new("02aa", "03bb", "big data");
+        task.payload_cid = Some("zQmBig".to_string());
+        let response = task.respond("got it");
+        assert!(response.payload_cid.is_none());
+    }
+}
