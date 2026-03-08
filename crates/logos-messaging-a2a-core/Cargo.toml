@@ -11,3 +11,7 @@ uuid = { workspace = true }
 k256 = { workspace = true }
 hex = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

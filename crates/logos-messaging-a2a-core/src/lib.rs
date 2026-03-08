@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod envelope;
 pub mod presence;
+pub mod registry;
 pub mod task;
 pub mod topics;
 
