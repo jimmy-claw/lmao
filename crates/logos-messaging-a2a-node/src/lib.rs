@@ -2045,6 +2045,416 @@ mod tests {
         let responses = client.poll_tasks().await.unwrap();
         assert_eq!(responses.len(), 3);
     }
+
+    // --- Malformed messages, duplicate handling, and edge cases ---
+
+    #[tokio::test]
+    async fn test_malformed_json_ignored() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config(
+            "test",
+            "test agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let topic = topics::task_topic(node.pubkey());
+
+        // Subscribe first
+        let _ = node.poll_tasks().await.unwrap();
+
+        // Inject garbage bytes
+        transport.publish(&topic, b"not json at all").await.unwrap();
+        transport.publish(&topic, b"{malformed}").await.unwrap();
+        transport.publish(&topic, b"").await.unwrap();
+
+        // Should not crash, just return empty
+        let tasks = node.poll_tasks().await.unwrap();
+        assert!(
+            tasks.is_empty(),
+            "malformed messages should be silently ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wrong_envelope_type_ignored() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config(
+            "test",
+            "test agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let topic = topics::task_topic(node.pubkey());
+        let _ = node.poll_tasks().await.unwrap();
+
+        // Send an AgentCard envelope on the task topic — should be ignored
+        let card_envelope = A2AEnvelope::AgentCard(AgentCard {
+            name: "impostor".to_string(),
+            description: "not a task".to_string(),
+            version: "0.1.0".to_string(),
+            capabilities: vec![],
+            public_key: "02dead".to_string(),
+            intro_bundle: None,
+        });
+        let payload = serde_json::to_vec(&card_envelope).unwrap();
+        transport.publish(&topic, &payload).await.unwrap();
+
+        let tasks = node.poll_tasks().await.unwrap();
+        assert!(
+            tasks.is_empty(),
+            "non-Task envelopes should not produce tasks"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ack_envelope_on_task_topic_ignored() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config(
+            "test",
+            "test agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let topic = topics::task_topic(node.pubkey());
+        let _ = node.poll_tasks().await.unwrap();
+
+        let ack_envelope = A2AEnvelope::Ack {
+            message_id: "fake-msg-id".to_string(),
+        };
+        let payload = serde_json::to_vec(&ack_envelope).unwrap();
+        transport.publish(&topic, &payload).await.unwrap();
+
+        let tasks = node.poll_tasks().await.unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_task_without_identity_ignored() {
+        let transport = MockTransport::new();
+        // Node WITHOUT encryption
+        let node = WakuA2ANode::with_config(
+            "test",
+            "test agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        assert!(node.identity().is_none());
+        let topic = topics::task_topic(node.pubkey());
+        let _ = node.poll_tasks().await.unwrap();
+
+        // Send an encrypted task envelope
+        let enc_envelope = A2AEnvelope::EncryptedTask {
+            encrypted: logos_messaging_a2a_crypto::EncryptedPayload {
+                nonce: "AAAAAAAAAAAAAAAA".to_string(),
+                ciphertext: "Y2lwaGVydGV4dA==".to_string(),
+            },
+            sender_pubkey: "02aabbccdd".to_string(),
+        };
+        let payload = serde_json::to_vec(&enc_envelope).unwrap();
+        transport.publish(&topic, &payload).await.unwrap();
+
+        // Should silently skip — no identity to decrypt
+        let tasks = node.poll_tasks().await.unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_send_in_nonexistent_session_error_message() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test agent", vec![], transport);
+        let err = node
+            .send_in_session("ghost-session", "hi")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("ghost-session"),
+            "error should mention the session ID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_auto_created_on_incoming_task_with_session_id() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let spk = sender.pubkey().to_string();
+
+        // Create a session on sender side and send within it
+        let session = sender.create_session(&rpk);
+        sender
+            .send_in_session(&session.id, "hi from session")
+            .await
+            .unwrap();
+
+        // Receiver polls — session should be auto-created
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].session_id, Some(session.id.clone()));
+
+        // Receiver should now have a session for this
+        let recv_session = receiver.get_session(&session.id);
+        assert!(
+            recv_session.is_some(),
+            "session should be auto-created on receive"
+        );
+        assert_eq!(recv_session.unwrap().peer, spk);
+    }
+
+    #[tokio::test]
+    async fn test_poll_tasks_returns_empty_on_repeated_calls() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config("test", "test agent", vec![], transport, fast_config());
+
+        // Multiple polls on empty topic
+        for _ in 0..5 {
+            let tasks = node.poll_tasks().await.unwrap();
+            assert!(tasks.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_storage_offload_config_default_threshold() {
+        let storage = Arc::new(MockStorage::new());
+        let config = StorageOffloadConfig::new(storage);
+        assert_eq!(config.threshold_bytes, 65_536);
+    }
+
+    #[tokio::test]
+    async fn test_storage_offload_config_custom_threshold() {
+        let storage = Arc::new(MockStorage::new());
+        let config = StorageOffloadConfig::with_threshold(storage, 1024);
+        assert_eq!(config.threshold_bytes, 1024);
+    }
+
+    #[tokio::test]
+    async fn test_payment_with_empty_tx_hash_rejected() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend: backend.clone(),
+            required_amount: 50,
+            auto_pay: false,
+            auto_pay_amount: 0,
+            verify_on_chain: false,
+            receiving_account: String::new(),
+        });
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+
+        // Task with empty tx hash
+        let mut task = Task::new(sender.pubkey(), &rpk, "empty tx");
+        task.payment_tx = Some(String::new());
+        task.payment_amount = Some(100);
+        sender.send_task(&task).await.unwrap();
+
+        let received = receiver.poll_tasks().await.unwrap();
+        assert!(received.is_empty(), "empty tx hash should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_payment_zero_required_accepts_all() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend,
+            required_amount: 0,
+            auto_pay: false,
+            auto_pay_amount: 0,
+            verify_on_chain: false,
+            receiving_account: String::new(),
+        });
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+
+        // No payment at all
+        let task = Task::new(sender.pubkey(), &rpk, "free task");
+        sender.send_task(&task).await.unwrap();
+
+        let received = receiver.poll_tasks().await.unwrap();
+        assert_eq!(
+            received.len(),
+            1,
+            "zero required_amount should accept all tasks"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_node_without_payment_config_accepts_all() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+
+        let task = Task::new(sender.pubkey(), &rpk, "no payment config");
+        sender.send_task(&task).await.unwrap();
+
+        let received = receiver.poll_tasks().await.unwrap();
+        assert_eq!(
+            received.len(),
+            1,
+            "node without payment config should accept all tasks"
+        );
+    }
+
+    #[test]
+    fn test_peer_map_default_trait() {
+        let map = presence::PeerMap::default();
+        assert!(map.is_empty());
+        assert_eq!(map.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_presence_self_not_in_peers() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config(
+            "self",
+            "self agent",
+            vec!["text".into()],
+            transport.clone(),
+            fast_config(),
+        );
+
+        // Announce and poll own presence
+        node.announce_presence().await.unwrap();
+        let count = node.poll_presence().await.unwrap();
+        // Own announcements are filtered by the presence subscription
+        // (they appear on the topic but the node ignores its own agent_id)
+        assert_eq!(
+            count, 0,
+            "node should ignore its own presence announcements"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_announce_presence_with_ttl() {
+        let transport = MockTransport::new();
+        let alice = WakuA2ANode::with_config(
+            "alice",
+            "alice agent",
+            vec!["text".into()],
+            transport.clone(),
+            fast_config(),
+        );
+        let bob =
+            WakuA2ANode::with_config("bob", "bob agent", vec![], transport.clone(), fast_config());
+
+        alice.announce_presence_with_ttl(600).await.unwrap();
+
+        let count = bob.poll_presence().await.unwrap();
+        assert_eq!(count, 1);
+
+        let peers = bob.peers().all_live();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].1.ttl_secs, 600);
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_node_decrypt_with_wrong_sender_pubkey_ignored() {
+        let transport = MockTransport::new();
+        let receiver =
+            WakuA2ANode::new_encrypted("receiver", "receiver", vec![], transport.clone());
+        let topic = topics::task_topic(receiver.pubkey());
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        // Create an encrypted task envelope with a bogus sender_pubkey
+        // that doesn't match any actual identity — decryption should fail
+        let alice = logos_messaging_a2a_crypto::AgentIdentity::generate();
+        let bogus_key = logos_messaging_a2a_crypto::AgentIdentity::generate();
+
+        // Encrypt with alice's key agreement to receiver, but claim sender is bogus
+        let receiver_identity = receiver.identity().unwrap();
+        let shared = alice.shared_key(&receiver_identity.public);
+        let task = Task::new("02fake", receiver.pubkey(), "sneaky");
+        let task_json = serde_json::to_vec(&task).unwrap();
+        let encrypted = shared.encrypt(&task_json).unwrap();
+
+        let envelope = A2AEnvelope::EncryptedTask {
+            encrypted,
+            sender_pubkey: bogus_key.public_key_hex(), // wrong sender
+        };
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(&topic, &payload).await.unwrap();
+
+        // Receiver tries to decrypt using bogus_key as sender — ECDH will produce wrong shared secret
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert!(
+            tasks.is_empty(),
+            "wrong sender pubkey should cause decryption failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_task_with_payload_cid_but_no_storage_backend() {
+        let transport = MockTransport::new();
+        // Node WITHOUT storage offload configured
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        // Manually inject a task envelope with payload_cid set
+        let mut task = Task::new("02sender", &rpk, "placeholder");
+        task.payload_cid = Some("zQmNoBackend".to_string());
+        let envelope = A2AEnvelope::Task(task);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        let topic = topics::task_topic(&rpk);
+        transport.publish(&topic, &payload).await.unwrap();
+
+        // Should still return the task (with the placeholder text), just can't fetch CID
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].payload_cid, Some("zQmNoBackend".to_string()));
+    }
 }
 
 #[cfg(test)]
