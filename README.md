@@ -274,6 +274,7 @@ LOGOS_CORE_LIB_DIR=/path/to/sdk/lib make demo-logos-core-real
 | `logos-messaging-a2a-mcp` | MCP bridge — expose agents as tools for Claude, Cursor, etc. |
 | `logos-messaging-a2a-ffi` | C FFI bridge for Logos Core Qt module integration |
 | `lmao-ffi` | High-level C FFI wrapper (simpler API for embedders) |
+| `logos-messaging-a2a-execution` | On-chain execution: `ExecutionBackend` trait + Status Network (EVM) + LEZ stub |
 
 ## Encryption
 
