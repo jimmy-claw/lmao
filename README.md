@@ -270,6 +270,7 @@ LOGOS_CORE_LIB_DIR=/path/to/sdk/lib make demo-logos-core-real
 | `logos-messaging-a2a-transport` | `Transport` trait + nwaku REST + `InMemoryTransport` + `LogosCoreDeliveryTransport` + SDS reliability |
 | `logos-messaging-a2a-storage` | `StorageBackend` trait + Logos Storage (Codex) REST + `LogosCoreStorageBackend` |
 | `logos-messaging-a2a-node` | A2A node: announce, discover, send/receive tasks, presence, payments |
+| `logos-messaging-a2a-execution` | `ExecutionBackend` trait + Status Network (EVM) + LEZ backends for on-chain payments & agent registration |
 | `logos-messaging-a2a-cli` | CLI for interacting with the network |
 | `logos-messaging-a2a-mcp` | MCP bridge — expose agents as tools for Claude, Cursor, etc. |
 | `logos-messaging-a2a-ffi` | C FFI bridge for Logos Core Qt module integration |
