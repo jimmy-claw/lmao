@@ -14,6 +14,10 @@ pub fn ack_topic(message_id: &str) -> String {
     format!("/waku-a2a/1/ack/{}/proto", message_id)
 }
 
+pub fn stream_topic(task_id: &str) -> String {
+    format!("/waku-a2a/1/stream/{}/proto", task_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -28,5 +32,10 @@ mod tests {
     #[test]
     fn test_presence_topic() {
         assert_eq!(PRESENCE, "/lmao/1/presence/proto");
+    }
+
+    #[test]
+    fn test_stream_topic() {
+        assert_eq!(stream_topic("abc-123"), "/waku-a2a/1/stream/abc-123/proto");
     }
 }
