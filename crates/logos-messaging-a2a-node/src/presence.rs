@@ -393,4 +393,134 @@ mod tests {
         assert_eq!(map.all_live().len(), 100);
         assert_eq!(map.find_by_capability("common").len(), 100);
     }
+
+    #[test]
+    fn test_peer_map_default_trait() {
+        let map = PeerMap::default();
+        assert!(map.is_empty());
+        assert_eq!(map.len(), 0);
+    }
+
+    #[test]
+    fn test_find_by_capability_mixed_expired_and_live() {
+        let map = PeerMap::new();
+        map.update(&make_announcement("live", "live-agent", vec!["text"], 9999));
+        map.update(&make_announcement("dead", "dead-agent", vec!["text"], 0));
+
+        let found = map.find_by_capability("text");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "live");
+    }
+
+    #[test]
+    fn test_peer_with_multiple_capabilities() {
+        let map = PeerMap::new();
+        map.update(&make_announcement(
+            "multi",
+            "multi-agent",
+            vec!["text", "code", "summarize"],
+            9999,
+        ));
+
+        assert_eq!(map.find_by_capability("text").len(), 1);
+        assert_eq!(map.find_by_capability("code").len(), 1);
+        assert_eq!(map.find_by_capability("summarize").len(), 1);
+        assert!(map.find_by_capability("translate").is_empty());
+    }
+
+    #[test]
+    fn test_peer_info_waku_topic_stored() {
+        let map = PeerMap::new();
+        let ann = make_announcement("peer1", "agent", vec!["text"], 9999);
+        map.update(&ann);
+
+        let info = map.get("peer1").unwrap();
+        assert_eq!(info.waku_topic, "/waku-a2a/1/task/peer1/proto");
+    }
+
+    #[test]
+    fn test_evict_expired_mixed_ttls() {
+        let map = PeerMap::new();
+        map.update(&make_announcement("a", "a", vec![], 0)); // expired immediately
+        map.update(&make_announcement("b", "b", vec![], 9999)); // alive
+        map.update(&make_announcement("c", "c", vec![], 0)); // expired immediately
+        map.update(&make_announcement("d", "d", vec![], 9999)); // alive
+
+        assert_eq!(map.len(), 4);
+        let evicted = map.evict_expired();
+        assert_eq!(evicted, 2);
+        assert_eq!(map.len(), 2);
+        assert!(map.get("b").is_some());
+        assert!(map.get("d").is_some());
+        assert!(map.get("a").is_none());
+        assert!(map.get("c").is_none());
+    }
+
+    #[test]
+    fn test_all_live_excludes_expired() {
+        let map = PeerMap::new();
+        map.update(&make_announcement("live1", "a", vec!["x"], 9999));
+        map.update(&make_announcement("dead1", "b", vec!["y"], 0));
+        map.update(&make_announcement("live2", "c", vec!["z"], 9999));
+
+        let live = map.all_live();
+        assert_eq!(live.len(), 2);
+
+        let ids: Vec<&str> = live.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(ids.contains(&"live1"));
+        assert!(ids.contains(&"live2"));
+    }
+
+    #[test]
+    fn test_peer_info_is_expired_at_large_ttl() {
+        let info = PeerInfo {
+            name: "test".to_string(),
+            capabilities: vec![],
+            waku_topic: "".to_string(),
+            ttl_secs: u64::MAX,
+            last_seen: 0,
+        };
+        // With max TTL, should never expire even at max time
+        assert!(!info.is_expired_at(u64::MAX));
+    }
+
+    #[test]
+    fn test_update_refreshes_last_seen() {
+        let map = PeerMap::new();
+        map.update(&make_announcement("peer", "agent", vec!["x"], 9999));
+
+        let info1 = map.get("peer").unwrap();
+        // Update again — last_seen should be >= previous
+        map.update(&make_announcement("peer", "agent", vec!["x"], 9999));
+        let info2 = map.get("peer").unwrap();
+
+        assert!(info2.last_seen >= info1.last_seen);
+    }
+
+    #[test]
+    fn test_peer_info_equality() {
+        let a = PeerInfo {
+            name: "test".to_string(),
+            capabilities: vec!["x".to_string()],
+            waku_topic: "/topic".to_string(),
+            ttl_secs: 300,
+            last_seen: 1000,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_get_returns_none_after_evict() {
+        let map = PeerMap::new();
+        map.update(&make_announcement("peer", "agent", vec!["x"], 0));
+
+        // Peer exists but expired
+        assert!(map.get("peer").is_none());
+
+        // Evict clears it entirely
+        map.evict_expired();
+        assert_eq!(map.len(), 0);
+        assert!(map.get("peer").is_none());
+    }
 }

@@ -494,4 +494,84 @@ mod tests {
             other => panic!("expected Http error, got: {:?}", other),
         }
     }
+
+    #[tokio::test]
+    async fn upload_same_content_twice_returns_different_cids() {
+        // MockStorage uses monotonic IDs, not content-addressing
+        let backend = MockStorage::new();
+        let cid1 = backend.upload(b"same".to_vec()).await.unwrap();
+        let cid2 = backend.upload(b"same".to_vec()).await.unwrap();
+        assert_ne!(cid1, cid2);
+        // But both CIDs map to the same content
+        assert_eq!(backend.download(&cid1).await.unwrap(), b"same");
+        assert_eq!(backend.download(&cid2).await.unwrap(), b"same");
+    }
+
+    #[tokio::test]
+    async fn maybe_offload_propagates_download_verification() {
+        let backend = MockStorage::new();
+        let data = vec![0xab; 200];
+        let result = maybe_offload(&backend, &data, 100).await.unwrap();
+        let cid = result.unwrap();
+        let downloaded = backend.download(&cid).await.unwrap();
+        assert_eq!(downloaded, data);
+    }
+
+    #[test]
+    fn storage_error_debug_format() {
+        let http_err = StorageError::Http("timeout".to_string());
+        let debug = format!("{:?}", http_err);
+        assert!(debug.contains("Http"));
+        assert!(debug.contains("timeout"));
+
+        let api_err = StorageError::Api {
+            status: 429,
+            body: "rate limited".to_string(),
+        };
+        let debug = format!("{:?}", api_err);
+        assert!(debug.contains("Api"));
+        assert!(debug.contains("429"));
+    }
+
+    #[tokio::test]
+    async fn mock_storage_sequential_cid_generation() {
+        let backend = MockStorage::new();
+        let cid0 = backend.upload(b"a".to_vec()).await.unwrap();
+        let cid1 = backend.upload(b"b".to_vec()).await.unwrap();
+        let cid2 = backend.upload(b"c".to_vec()).await.unwrap();
+        assert_eq!(cid0, "zMock0");
+        assert_eq!(cid1, "zMock1");
+        assert_eq!(cid2, "zMock2");
+    }
+
+    #[tokio::test]
+    async fn failing_storage_upload_returns_http_error() {
+        let backend = FailingStorage;
+        let result = backend.upload(b"test".to_vec()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StorageError::Http(msg) => assert!(msg.contains("connection refused")),
+            other => panic!("expected Http error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn maybe_offload_below_threshold_does_not_upload() {
+        let backend = MockStorage::new();
+        let _ = maybe_offload(&backend, &[1, 2, 3], 100).await.unwrap();
+        // Nothing should have been uploaded
+        assert!(backend.download("zMock0").await.is_err());
+    }
+
+    #[test]
+    fn default_offload_threshold_is_100kb() {
+        assert_eq!(DEFAULT_OFFLOAD_THRESHOLD, 100 * 1024);
+    }
+
+    #[cfg(feature = "rest")]
+    #[test]
+    fn logos_storage_rest_empty_string_url() {
+        let backend = LogosStorageRest::new("");
+        assert_eq!(backend.base_url, "");
+    }
 }
