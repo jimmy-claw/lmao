@@ -75,6 +75,15 @@ enum TaskAction {
         #[arg(long)]
         id: String,
     },
+    /// Follow a task's streaming output
+    Stream {
+        /// Task ID (UUID) to follow
+        #[arg(long)]
+        id: String,
+        /// How long to wait for the stream to complete (seconds)
+        #[arg(long, default_value = "30")]
+        timeout: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -268,6 +277,45 @@ async fn main() -> Result<()> {
                     Err(e) => {
                         eprintln!("Failed to poll: {}", e);
                     }
+                }
+            }
+            TaskAction::Stream { id, timeout } => {
+                let node = WakuA2ANode::new("cli-stream", "CLI client", vec![], transport);
+                println!(
+                    "Following stream for task {} (timeout {}s)...\n",
+                    id, timeout
+                );
+
+                let deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+                let mut last_index: Option<u32> = None;
+
+                while tokio::time::Instant::now() < deadline {
+                    match node.poll_stream_chunks(&id).await {
+                        Ok(chunks) => {
+                            for chunk in &chunks {
+                                // Only print chunks we haven't printed yet
+                                if last_index.is_none() || chunk.chunk_index > last_index.unwrap() {
+                                    print!("{}", chunk.text);
+                                    last_index = Some(chunk.chunk_index);
+                                }
+                            }
+                            // Check if stream is complete
+                            if chunks.iter().any(|c| c.is_final) {
+                                println!();
+                                println!("\n--- Stream complete ({} chunks) ---", chunks.len());
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Stream poll error: {}", e);
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+
+                if last_index.is_none() {
+                    println!("No stream chunks received for task {}", id);
                 }
             }
         },
@@ -798,5 +846,50 @@ mod tests {
     fn unknown_flag_rejected() {
         let err = try_parse(&["cli", "--bogus"]).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::UnknownArgument);
+    }
+
+    // ── Task Stream ──
+
+    #[test]
+    fn task_stream_with_id() {
+        let cli = try_parse(&["cli", "task", "stream", "--id", "task-42"]).unwrap();
+        match cli.command {
+            Commands::Task {
+                action: TaskAction::Stream { id, timeout },
+            } => {
+                assert_eq!(id, "task-42");
+                assert_eq!(timeout, 30); // default
+            }
+            _ => panic!("expected Task Stream"),
+        }
+    }
+
+    #[test]
+    fn task_stream_with_timeout() {
+        let cli = try_parse(&[
+            "cli",
+            "task",
+            "stream",
+            "--id",
+            "task-42",
+            "--timeout",
+            "60",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Task {
+                action: TaskAction::Stream { id, timeout },
+            } => {
+                assert_eq!(id, "task-42");
+                assert_eq!(timeout, 60);
+            }
+            _ => panic!("expected Task Stream"),
+        }
+    }
+
+    #[test]
+    fn task_stream_missing_id() {
+        let err = try_parse(&["cli", "task", "stream"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
     }
 }

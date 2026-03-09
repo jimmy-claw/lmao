@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentCard;
 use crate::presence::PresenceAnnouncement;
-use crate::task::Task;
+use crate::task::{Task, TaskStreamChunk};
 
 /// Wire envelope for all messages on Waku topics.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -19,6 +19,7 @@ pub enum A2AEnvelope {
         sender_pubkey: String,
     },
     Presence(PresenceAnnouncement),
+    StreamChunk(TaskStreamChunk),
 }
 
 #[cfg(test)]
@@ -56,6 +57,21 @@ mod tests {
         let deserialized: A2AEnvelope = serde_json::from_str(&json).unwrap();
         assert_eq!(envelope, deserialized);
         assert!(json.contains("encrypted_task"));
+    }
+
+    #[test]
+    fn test_stream_chunk_envelope_serialization() {
+        let chunk = TaskStreamChunk {
+            task_id: "task-42".to_string(),
+            chunk_index: 3,
+            text: "partial ".to_string(),
+            is_final: false,
+        };
+        let envelope = A2AEnvelope::StreamChunk(chunk.clone());
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(json.contains("stream_chunk"));
+        let deserialized: A2AEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(envelope, deserialized);
     }
 
     #[test]

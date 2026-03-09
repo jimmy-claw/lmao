@@ -27,6 +27,18 @@ pub struct Message {
     pub parts: Vec<Part>,
 }
 
+/// A streaming chunk for incremental task results (e.g., LLM token output).
+///
+/// Agents send a sequence of chunks with incrementing `chunk_index`.
+/// The final chunk has `is_final = true`, signalling the stream is complete.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TaskStreamChunk {
+    pub task_id: String,
+    pub chunk_index: u32,
+    pub text: String,
+    pub is_final: bool,
+}
+
 /// An A2A task: the unit of work exchanged between agents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
@@ -288,5 +300,33 @@ mod tests {
         task.payload_cid = Some("zQmBig".to_string());
         let response = task.respond("got it");
         assert!(response.payload_cid.is_none());
+    }
+
+    #[test]
+    fn test_stream_chunk_serialization() {
+        let chunk = TaskStreamChunk {
+            task_id: "task-1".to_string(),
+            chunk_index: 0,
+            text: "Hello ".to_string(),
+            is_final: false,
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        assert!(json.contains("\"task_id\":\"task-1\""));
+        assert!(json.contains("\"chunk_index\":0"));
+        assert!(json.contains("\"is_final\":false"));
+        let deserialized: TaskStreamChunk = serde_json::from_str(&json).unwrap();
+        assert_eq!(chunk, deserialized);
+    }
+
+    #[test]
+    fn test_stream_chunk_final() {
+        let chunk = TaskStreamChunk {
+            task_id: "task-1".to_string(),
+            chunk_index: 5,
+            text: "done".to_string(),
+            is_final: true,
+        };
+        assert!(chunk.is_final);
+        assert_eq!(chunk.chunk_index, 5);
     }
 }
