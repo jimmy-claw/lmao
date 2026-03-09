@@ -39,7 +39,7 @@ struct SendToAgentInput {
     message: String,
 }
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(
     name = "logos-messaging-a2a-mcp",
     about = "MCP bridge for Logos A2A agents"
@@ -284,4 +284,93 @@ async fn main() -> Result<()> {
     service.waiting().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    // ── CLI arg parsing ──
+
+    #[test]
+    fn cli_defaults() {
+        let cli = Cli::try_parse_from(["mcp"]).unwrap();
+        assert_eq!(cli.waku_url, "http://localhost:8645");
+        assert_eq!(cli.timeout, 30);
+    }
+
+    #[test]
+    fn cli_custom_waku_url() {
+        let cli = Cli::try_parse_from(["mcp", "--waku-url", "http://node:9090"]).unwrap();
+        assert_eq!(cli.waku_url, "http://node:9090");
+    }
+
+    #[test]
+    fn cli_custom_timeout() {
+        let cli = Cli::try_parse_from(["mcp", "--timeout", "60"]).unwrap();
+        assert_eq!(cli.timeout, 60);
+    }
+
+    #[test]
+    fn cli_all_flags() {
+        let cli =
+            Cli::try_parse_from(["mcp", "--waku-url", "http://x:1234", "--timeout", "5"]).unwrap();
+        assert_eq!(cli.waku_url, "http://x:1234");
+        assert_eq!(cli.timeout, 5);
+    }
+
+    #[test]
+    fn cli_rejects_unknown_flag() {
+        let err = Cli::try_parse_from(["mcp", "--bogus"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn cli_rejects_invalid_timeout() {
+        let err = Cli::try_parse_from(["mcp", "--timeout", "not-a-number"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    // ── list_cached_agents with empty cache ──
+
+    #[tokio::test]
+    async fn list_cached_agents_empty_cache() {
+        let bridge = LogosA2ABridge::new("http://localhost:8645", 30);
+        let result = bridge.list_cached_agents().await.unwrap();
+        // Should indicate no cached agents
+        let text = match &result.content[0].raw {
+            RawContent::Text(t) => t.text.as_str(),
+            _ => panic!("expected text content"),
+        };
+        assert!(text.contains("No cached agents"));
+    }
+
+    // ── list_cached_agents with populated cache ──
+
+    #[tokio::test]
+    async fn list_cached_agents_with_agents() {
+        let bridge = LogosA2ABridge::new("http://localhost:8645", 30);
+
+        // Populate cache
+        {
+            let mut agents = bridge.agents.write().await;
+            agents.push(AgentCard {
+                name: "test-agent".to_string(),
+                version: "1.0".to_string(),
+                description: "A test agent".to_string(),
+                capabilities: vec!["text".to_string()],
+                public_key: "deadbeef".to_string(),
+                intro_bundle: None,
+            });
+        }
+
+        let result = bridge.list_cached_agents().await.unwrap();
+        let text = match &result.content[0].raw {
+            RawContent::Text(t) => t.text.as_str(),
+            _ => panic!("expected text content"),
+        };
+        assert!(text.contains("test-agent"));
+        assert!(text.contains("A test agent"));
+    }
 }
