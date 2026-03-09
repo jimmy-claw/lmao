@@ -202,3 +202,315 @@ pub unsafe extern "C" fn waku_a2a_shutdown() {
         *guard = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::ffi::CString;
+
+    /// Helper: create a C string literal for test arguments.
+    fn c(s: &str) -> CString {
+        CString::new(s).unwrap()
+    }
+
+    /// Ensure the global node is cleared before each test.
+    fn reset_node() {
+        unsafe {
+            waku_a2a_shutdown();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // waku_a2a_free_string
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn free_string_null_does_not_crash() {
+        unsafe {
+            waku_a2a_free_string(ptr::null_mut());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn free_string_valid_does_not_crash() {
+        let s = to_c_string("hello from test");
+        unsafe {
+            waku_a2a_free_string(s);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // waku_a2a_pubkey — before init should be null
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn pubkey_returns_null_before_init() {
+        reset_node();
+        let pk = unsafe { waku_a2a_pubkey() };
+        assert!(
+            pk.is_null(),
+            "pubkey should be null when no node is initialized"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // waku_a2a_agent_card_json — before init should be null
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn agent_card_json_returns_null_before_init() {
+        reset_node();
+        let json = unsafe { waku_a2a_agent_card_json() };
+        assert!(
+            json.is_null(),
+            "agent_card_json should be null when no node is initialized"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // waku_a2a_init — plaintext mode
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn init_success_plaintext() {
+        reset_node();
+        let name = c("test-agent");
+        let desc = c("A test agent");
+        let url = c("http://127.0.0.1:8645");
+
+        let ret = unsafe { waku_a2a_init(name.as_ptr(), desc.as_ptr(), url.as_ptr(), false) };
+        assert_eq!(ret, 0, "init should return 0 on success");
+
+        // pubkey should now be non-null and a valid hex string
+        let pk = unsafe { waku_a2a_pubkey() };
+        assert!(!pk.is_null(), "pubkey should be non-null after init");
+        let pk_str = unsafe { CStr::from_ptr(pk) }.to_string_lossy().to_string();
+        assert!(!pk_str.is_empty(), "pubkey string should not be empty");
+        assert!(
+            pk_str.chars().all(|c| c.is_ascii_hexdigit()),
+            "pubkey should be hex: {pk_str}"
+        );
+        unsafe { waku_a2a_free_string(pk) };
+
+        reset_node();
+    }
+
+    // ------------------------------------------------------------------
+    // waku_a2a_init — encrypted mode
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn init_success_encrypted() {
+        reset_node();
+        let name = c("enc-agent");
+        let desc = c("An encrypted test agent");
+        let url = c("http://127.0.0.1:8645");
+
+        let ret = unsafe { waku_a2a_init(name.as_ptr(), desc.as_ptr(), url.as_ptr(), true) };
+        assert_eq!(ret, 0, "encrypted init should return 0");
+
+        // pubkey should be valid hex
+        let pk = unsafe { waku_a2a_pubkey() };
+        assert!(!pk.is_null());
+        let pk_str = unsafe { CStr::from_ptr(pk) }.to_string_lossy().to_string();
+        assert!(pk_str.chars().all(|c| c.is_ascii_hexdigit()));
+        unsafe { waku_a2a_free_string(pk) };
+
+        // agent card should contain intro_bundle for encrypted mode
+        let card_ptr = unsafe { waku_a2a_agent_card_json() };
+        assert!(!card_ptr.is_null());
+        let card_json = unsafe { CStr::from_ptr(card_ptr) }
+            .to_string_lossy()
+            .to_string();
+        let v: serde_json::Value =
+            serde_json::from_str(&card_json).expect("agent card should be valid JSON");
+        assert!(
+            v.get("intro_bundle").is_some(),
+            "encrypted card should have intro_bundle"
+        );
+        unsafe { waku_a2a_free_string(card_ptr) };
+
+        reset_node();
+    }
+
+    // ------------------------------------------------------------------
+    // waku_a2a_agent_card_json — valid JSON with expected fields
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn agent_card_json_valid_after_init() {
+        reset_node();
+        let name = c("card-agent");
+        let desc = c("Card test");
+        let url = c("http://127.0.0.1:8645");
+
+        let ret = unsafe { waku_a2a_init(name.as_ptr(), desc.as_ptr(), url.as_ptr(), false) };
+        assert_eq!(ret, 0);
+
+        let card_ptr = unsafe { waku_a2a_agent_card_json() };
+        assert!(!card_ptr.is_null());
+        let card_json = unsafe { CStr::from_ptr(card_ptr) }
+            .to_string_lossy()
+            .to_string();
+        let v: serde_json::Value =
+            serde_json::from_str(&card_json).expect("agent card should be valid JSON");
+
+        assert_eq!(v["name"], "card-agent");
+        assert_eq!(v["description"], "Card test");
+        assert!(v["public_key"].is_string());
+        assert!(v["capabilities"].is_array());
+        unsafe { waku_a2a_free_string(card_ptr) };
+
+        reset_node();
+    }
+
+    // ------------------------------------------------------------------
+    // waku_a2a_shutdown — pubkey returns null afterwards
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn shutdown_clears_node() {
+        reset_node();
+        let name = c("shutdown-agent");
+        let desc = c("Shutdown test");
+        let url = c("http://127.0.0.1:8645");
+
+        let ret = unsafe { waku_a2a_init(name.as_ptr(), desc.as_ptr(), url.as_ptr(), false) };
+        assert_eq!(ret, 0);
+
+        // pubkey is valid before shutdown
+        let pk = unsafe { waku_a2a_pubkey() };
+        assert!(!pk.is_null());
+        unsafe { waku_a2a_free_string(pk) };
+
+        // shutdown
+        unsafe { waku_a2a_shutdown() };
+
+        // pubkey should now be null
+        let pk_after = unsafe { waku_a2a_pubkey() };
+        assert!(pk_after.is_null(), "pubkey should be null after shutdown");
+    }
+
+    // ------------------------------------------------------------------
+    // waku_a2a_respond — invalid JSON returns -1
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn respond_invalid_json_returns_error() {
+        reset_node();
+        let name = c("respond-agent");
+        let desc = c("Respond test");
+        let url = c("http://127.0.0.1:8645");
+
+        let ret = unsafe { waku_a2a_init(name.as_ptr(), desc.as_ptr(), url.as_ptr(), false) };
+        assert_eq!(ret, 0);
+
+        let bad_json = c("this is not valid json");
+        let result_text = c("some response");
+
+        let ret = unsafe { waku_a2a_respond(bad_json.as_ptr(), result_text.as_ptr()) };
+        assert_eq!(ret, -1, "respond with invalid JSON should return -1");
+
+        reset_node();
+    }
+
+    // ------------------------------------------------------------------
+    // Error paths: operations without a running nwaku node return -1/null
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn announce_without_node_returns_error() {
+        reset_node();
+        let ret = unsafe { waku_a2a_announce() };
+        assert_eq!(ret, -1, "announce without node should return -1");
+    }
+
+    #[test]
+    #[serial]
+    fn discover_without_node_returns_null() {
+        reset_node();
+        let ret = unsafe { waku_a2a_discover() };
+        assert!(ret.is_null(), "discover without node should return null");
+    }
+
+    #[test]
+    #[serial]
+    fn send_text_without_node_returns_error() {
+        reset_node();
+        let to = c("deadbeef");
+        let text = c("hello");
+        let ret = unsafe { waku_a2a_send_text(to.as_ptr(), text.as_ptr()) };
+        assert_eq!(ret, -1, "send_text without node should return -1");
+    }
+
+    #[test]
+    #[serial]
+    fn poll_tasks_without_node_returns_null() {
+        reset_node();
+        let ret = unsafe { waku_a2a_poll_tasks() };
+        assert!(ret.is_null(), "poll_tasks without node should return null");
+    }
+
+    #[test]
+    #[serial]
+    fn respond_without_node_returns_error() {
+        reset_node();
+        let task_json = c("{}");
+        let result_text = c("reply");
+        let ret = unsafe { waku_a2a_respond(task_json.as_ptr(), result_text.as_ptr()) };
+        assert_eq!(ret, -1, "respond without node should return -1");
+    }
+
+    // ------------------------------------------------------------------
+    // Re-initialization: init can be called again after shutdown
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn reinit_after_shutdown() {
+        reset_node();
+        let name = c("agent-v1");
+        let desc = c("First init");
+        let url = c("http://127.0.0.1:8645");
+
+        let ret = unsafe { waku_a2a_init(name.as_ptr(), desc.as_ptr(), url.as_ptr(), false) };
+        assert_eq!(ret, 0);
+
+        let pk1 = unsafe { waku_a2a_pubkey() };
+        assert!(!pk1.is_null());
+        let pk1_str = unsafe { CStr::from_ptr(pk1) }.to_string_lossy().to_string();
+        unsafe { waku_a2a_free_string(pk1) };
+
+        unsafe { waku_a2a_shutdown() };
+
+        // Re-init with new identity
+        let name2 = c("agent-v2");
+        let desc2 = c("Second init");
+        let ret = unsafe { waku_a2a_init(name2.as_ptr(), desc2.as_ptr(), url.as_ptr(), false) };
+        assert_eq!(ret, 0);
+
+        let pk2 = unsafe { waku_a2a_pubkey() };
+        assert!(!pk2.is_null());
+        let pk2_str = unsafe { CStr::from_ptr(pk2) }.to_string_lossy().to_string();
+        unsafe { waku_a2a_free_string(pk2) };
+
+        // New node should have a different key
+        assert_ne!(
+            pk1_str, pk2_str,
+            "re-initialized node should have a new keypair"
+        );
+
+        reset_node();
+    }
+}
