@@ -26,6 +26,7 @@ Google's A2A protocol is great. But it assumes HTTP: stable endpoints, central r
 │                                                      │
 │  /lmao/1/discovery/proto     ← AgentCard broadcasts │
 │  /lmao/1/task/{pubkey}/proto ← Task inbox per agent │
+│  /lmao/1/stream/{task_id}/proto ← Task streaming    │
 │  /lmao/1/ack/{msg_id}/proto  ← SDS acknowledgements │
 │  /lmao/1/presence/proto       ← Peer discovery        │
 └──────────┬──────────────┬──────────────┬─────────────┘
@@ -277,6 +278,26 @@ LOGOS_CORE_LIB_DIR=/path/to/sdk/lib make demo-logos-core-real
 | `lmao-ffi` | High-level C FFI wrapper (simpler API for embedders) |
 | `logos-messaging-a2a-execution` | On-chain execution: `ExecutionBackend` trait + Status Network (EVM) + LEZ stub |
 
+## CLI
+
+The `logos-messaging-a2a-cli` crate provides a command-line interface for interacting with the network.
+
+```bash
+cargo run -p logos-messaging-a2a-cli -- --waku http://localhost:8645 <command>
+```
+
+| Command | Description |
+|---------|-------------|
+| `agent run --name <n> --capabilities <c>` | Run an agent that processes incoming tasks |
+| `agent discover` | Discover agents on the network |
+| `agent bundle` | Print this agent's IntroBundle |
+| `task send --to <pubkey> --text <msg>` | Send a task to an agent |
+| `task status --id <uuid>` | Check task status / poll for response |
+| `task stream --id <uuid> [--timeout <s>]` | Follow a task's streaming output |
+| `presence announce --name <n>` | Announce this agent on the presence topic |
+| `presence discover [--capability <c>]` | Listen for presence announcements |
+| `presence peers [--capability <c>]` | Discover and list unique peers |
+
 ## Encryption
 
 End-to-end encrypted using **X25519 ECDH + ChaCha20-Poly1305** (stepping stone).
@@ -407,6 +428,52 @@ let sender = WakuA2ANode::new("client", "Client", vec![], transport.clone())
 Currently supported backends: `StatusNetworkBackend` (Status Network Sepolia).
 `LezExecutionBackend` is stubbed for future LEZ chain support.
 
+## Task Streaming
+
+Agents can send partial results incrementally as **stream chunks** over
+dedicated Waku topics. This is useful for long-running tasks (e.g. LLM token
+output) where the caller wants to display progress before the full result is
+ready.
+
+Each task gets its own stream topic: `/waku-a2a/1/stream/{task_id}/proto`.
+Chunks carry an incrementing index and the final chunk is flagged with
+`is_final = true`. The receiver polls for chunks, buffers them in order, and
+reassembles the full text once the final chunk arrives.
+
+### API usage
+
+```rust
+use logos_messaging_a2a_transport::memory::InMemoryTransport;
+use logos_messaging_a2a_node::WakuA2ANode;
+
+let transport = InMemoryTransport::new();
+let agent = WakuA2ANode::new("agent", "Streaming agent", vec![], transport.clone());
+let listener = WakuA2ANode::new("listener", "Listener", vec![], transport.clone());
+
+// Agent sends a task response as a stream of chunks
+let task = /* received task */;
+agent.respond_stream(&task, vec![
+    "Hello ".into(),
+    "beautiful ".into(),
+    "world!".into(),
+]).await?;
+
+// Listener polls for chunks (returns sorted by chunk_index)
+let chunks = listener.poll_stream_chunks(&task.id).await?;
+
+// Once the final chunk arrives, reassemble into a single string
+let full_text = listener.reassemble_stream(&task.id);
+assert_eq!(full_text, Some("Hello beautiful world!".to_string()));
+```
+
+### CLI usage
+
+```bash
+# Follow a task's streaming output (polls until final chunk or timeout)
+lmao task stream --id <task-id>
+lmao task stream --id <task-id> --timeout 60
+```
+
 ## Testing
 
 All transport implementations are swappable via the `Transport` trait.
@@ -473,6 +540,7 @@ module/
 - [x] Waku presence broadcasts — PeerMap discovery via well-known topic
 - [x] x402 payment flow — auto-pay, payment gating, on-chain verification, replay protection
 - [x] End-to-end demo — two agents, one task, payment flow, InMemoryTransport
+- [x] Task streaming — partial results over dedicated Waku stream topics
 - [ ] Logos Chat SDK — Double Ratchet for forward secrecy
 - [ ] LEZ agent registry — on-chain AgentCards via SPELbook
 - [ ] Logos Core plugin — packaged `.lgx` module
