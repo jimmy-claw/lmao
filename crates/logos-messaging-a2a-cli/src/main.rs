@@ -648,4 +648,155 @@ mod tests {
         let cli = try_parse(&["cli", "task", "send", "--to", "abc", "--text", "hello"]).unwrap();
         matches!(cli.command, Commands::Task { .. });
     }
+
+    // ── Default waku URL ──
+
+    #[test]
+    fn default_waku_url() {
+        let cli = try_parse(&["cli", "agent", "discover"]).unwrap();
+        assert_eq!(cli.waku, "http://localhost:8645");
+    }
+
+    // ── Agent Discover ──
+
+    #[test]
+    fn agent_discover_parses() {
+        let cli = try_parse(&["cli", "agent", "discover"]).unwrap();
+        match cli.command {
+            Commands::Agent {
+                action: AgentAction::Discover,
+            } => {}
+            _ => panic!("expected Agent Discover"),
+        }
+    }
+
+    // ── Agent Bundle ──
+
+    #[test]
+    fn agent_bundle_parses() {
+        let cli = try_parse(&["cli", "agent", "bundle"]).unwrap();
+        match cli.command {
+            Commands::Agent {
+                action: AgentAction::Bundle,
+            } => {}
+            _ => panic!("expected Agent Bundle"),
+        }
+    }
+
+    // ── Agent Run details ──
+
+    #[test]
+    fn agent_run_defaults() {
+        let cli = try_parse(&["cli", "agent", "run", "--name", "echo"]).unwrap();
+        match cli.command {
+            Commands::Agent {
+                action:
+                    AgentAction::Run {
+                        name,
+                        capabilities,
+                        encrypt,
+                    },
+            } => {
+                assert_eq!(name, "echo");
+                assert_eq!(capabilities, "text");
+                assert!(!encrypt);
+            }
+            _ => panic!("expected Agent Run"),
+        }
+    }
+
+    #[test]
+    fn agent_run_with_encrypt() {
+        let cli = try_parse(&["cli", "agent", "run", "--name", "secure", "--encrypt"]).unwrap();
+        match cli.command {
+            Commands::Agent {
+                action: AgentAction::Run { encrypt, .. },
+            } => {
+                assert!(encrypt);
+            }
+            _ => panic!("expected Agent Run"),
+        }
+    }
+
+    // ── Task Send details ──
+
+    #[test]
+    fn task_send_fields() {
+        let cli = try_parse(&[
+            "cli",
+            "task",
+            "send",
+            "--to",
+            "abcdef",
+            "--text",
+            "hello world",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Task {
+                action: TaskAction::Send { to, text },
+            } => {
+                assert_eq!(to, "abcdef");
+                assert_eq!(text, "hello world");
+            }
+            _ => panic!("expected Task Send"),
+        }
+    }
+
+    #[test]
+    fn task_send_missing_to() {
+        let err = try_parse(&["cli", "task", "send", "--text", "hi"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn task_send_missing_text() {
+        let err = try_parse(&["cli", "task", "send", "--to", "abc"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    // ── Task Status ──
+
+    #[test]
+    fn task_status_parses() {
+        let cli = try_parse(&[
+            "cli",
+            "task",
+            "status",
+            "--id",
+            "550e8400-e29b-41d4-a716-446655440000",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Task {
+                action: TaskAction::Status { id },
+            } => {
+                assert_eq!(id, "550e8400-e29b-41d4-a716-446655440000");
+            }
+            _ => panic!("expected Task Status"),
+        }
+    }
+
+    #[test]
+    fn task_status_missing_id() {
+        let err = try_parse(&["cli", "task", "status"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    // ── Missing subcommand ──
+
+    #[test]
+    fn missing_subcommand() {
+        let err = try_parse(&["cli"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+    }
+
+    #[test]
+    fn unknown_flag_rejected() {
+        let err = try_parse(&["cli", "--bogus"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
+    }
 }
