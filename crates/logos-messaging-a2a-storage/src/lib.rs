@@ -6,7 +6,7 @@
 //! | Backend | Feature flag | When to use |
 //! |---------|-------------|-------------|
 //! | [`LogosStorageRest`] | `rest` (default) | Standalone processes talking to a Codex REST API |
-//! | [`LogosCoreStorageBackend`] | `logos-core` | Inside a Logos Core host process (desktop client) |
+//! | `LogosCoreStorageBackend` | `logos-core` | Inside a Logos Core host process (desktop client) |
 //!
 //! # Example (REST)
 //!

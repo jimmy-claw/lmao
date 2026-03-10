@@ -72,7 +72,7 @@ impl SdsBloomFilter {
 
     /// Serialize the bloom filter to bytes for inclusion in SDS messages.
     ///
-    /// The format is: [8 bytes bitmap_bits LE][4 bytes k_num LE][32 bytes sip_keys][bitmap...]
+    /// The format is: \[8 bytes bitmap_bits LE\]\[4 bytes k_num LE\]\[32 bytes sip_keys\]\[bitmap...\]
     pub fn to_bytes(&self) -> Vec<u8> {
         let filter = self.inner.lock().unwrap();
         let bitmap = filter.bitmap();
@@ -91,7 +91,7 @@ impl SdsBloomFilter {
         out
     }
 
-    /// Deserialize a bloom filter from bytes produced by [`to_bytes`].
+    /// Deserialize a bloom filter from bytes produced by [`Self::to_bytes`].
     ///
     /// Returns `None` if the data is too short or malformed.
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
