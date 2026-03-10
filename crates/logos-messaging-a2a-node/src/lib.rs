@@ -1,5 +1,8 @@
+pub mod payment;
 pub mod presence;
 pub mod retry;
+pub mod session;
+pub mod storage;
 
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
@@ -10,94 +13,18 @@ use logos_messaging_a2a_core::{
     topics, A2AEnvelope, AgentCard, Message, PresenceAnnouncement, Task, TaskStreamChunk,
 };
 use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
-use logos_messaging_a2a_execution::{AgentId, ExecutionBackend};
-use logos_messaging_a2a_storage::StorageBackend;
+use logos_messaging_a2a_execution::AgentId;
 use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
-/// A multi-turn conversation session between two agents.
-#[derive(Debug, Clone)]
-pub struct Session {
-    pub id: String,
-    pub peer: String,
-    pub task_ids: Vec<String>,
-    pub created_at: u64,
-}
+pub use session::Session;
 
-impl Session {
-    fn new(peer: &str) -> Self {
-        let id = uuid::Uuid::new_v4().to_string();
-        let created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            id,
-            peer: peer.to_string(),
-            task_ids: Vec::new(),
-            created_at,
-        }
-    }
-}
+pub use storage::StorageOffloadConfig;
 
-/// Configuration for offloading large payloads to Logos Storage.
-///
-/// When a serialized message envelope exceeds `threshold_bytes`, the payload
-/// is uploaded to storage and only the CID is sent over the Waku network.
-/// The receiver automatically fetches the full payload by CID.
-pub struct StorageOffloadConfig {
-    /// Storage backend for uploading/downloading payloads.
-    pub backend: Arc<dyn StorageBackend>,
-    /// Payload size threshold in bytes. Payloads larger than this are offloaded.
-    /// Default: 65 536 (64 KB).
-    pub threshold_bytes: usize,
-}
-
-impl StorageOffloadConfig {
-    /// Create a new config with the given backend and default threshold (64 KB).
-    pub fn new(backend: Arc<dyn StorageBackend>) -> Self {
-        Self {
-            backend,
-            threshold_bytes: 65_536,
-        }
-    }
-
-    /// Create with a custom threshold.
-    pub fn with_threshold(backend: Arc<dyn StorageBackend>, threshold_bytes: usize) -> Self {
-        Self {
-            backend,
-            threshold_bytes,
-        }
-    }
-}
-
-/// Configuration for x402-style payment flow via [`ExecutionBackend`].
-///
-/// When configured on a node:
-/// - **Sending**: if `auto_pay` is true, `backend.pay()` is called before
-///   sending and the TX hash is attached to the outgoing task.
-/// - **Receiving**: if `required_amount > 0`, incoming tasks without a valid
-///   `payment_tx` (or with insufficient `payment_amount`) are rejected.
-pub struct PaymentConfig {
-    /// Execution backend used for `pay()` / `balance()` / `verify_transfer()` calls.
-    pub backend: Arc<dyn ExecutionBackend>,
-    /// Minimum payment required to accept an incoming task. 0 = no requirement.
-    pub required_amount: u64,
-    /// Automatically pay when sending tasks.
-    pub auto_pay: bool,
-    /// Amount to auto-pay per outgoing task (only used when `auto_pay` is true).
-    pub auto_pay_amount: u64,
-    /// When true, verify payment tx hashes on-chain via `backend.verify_transfer()`.
-    /// When false, only check that `payment_tx` and `payment_amount` are present.
-    pub verify_on_chain: bool,
-    /// Expected recipient address for on-chain verification (lowercase hex with 0x).
-    /// If empty, recipient is not checked (only amount is validated).
-    pub receiving_account: String,
-}
+pub use payment::PaymentConfig;
 
 /// A2A node: announce, discover, send/receive tasks over Waku.
 ///
@@ -1112,6 +1039,8 @@ fn rand_core() -> k256::elliptic_curve::rand_core::OsRng {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use logos_messaging_a2a_execution::ExecutionBackend;
+    use logos_messaging_a2a_storage::StorageBackend;
     use std::sync::{Arc, Mutex};
 
     type PublishedMessages = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
