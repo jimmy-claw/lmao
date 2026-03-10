@@ -389,4 +389,170 @@ mod tests {
         let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
         assert!(backend.parse_transfer_log(&[]).is_err());
     }
+
+    // --- Additional edge-case coverage ---
+
+    #[test]
+    fn parse_transfer_log_multiple_logs_finds_transfer() {
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
+        let logs = vec![
+            // Non-transfer event (too few topics)
+            serde_json::json!({
+                "address": "0xtoken",
+                "topics": ["0x0000000000000000000000000000000000000000000000000000000000000001"],
+                "data": "0x00"
+            }),
+            // The actual Transfer event
+            serde_json::json!({
+                "address": "0xtoken",
+                "topics": [
+                    TRANSFER_EVENT_TOPIC,
+                    "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ],
+                "data": "0x00000000000000000000000000000000000000000000000000000000000000c8"
+            }),
+        ];
+        let (from, to, amount) = backend.parse_transfer_log(&logs).unwrap();
+        assert_eq!(from, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(to, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(amount, 200); // 0xc8 = 200
+    }
+
+    #[test]
+    fn parse_transfer_log_empty_token_contract_matches_any() {
+        // When token_contract is empty, any address matches
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "");
+        let logs = vec![serde_json::json!({
+            "address": "0xany_contract",
+            "topics": [
+                TRANSFER_EVENT_TOPIC,
+                "0x0000000000000000000000001111111111111111111111111111111111111111",
+                "0x0000000000000000000000002222222222222222222222222222222222222222"
+            ],
+            "data": "0x000000000000000000000000000000000000000000000000000000000000000a"
+        })];
+        let (from, to, amount) = backend.parse_transfer_log(&logs).unwrap();
+        assert_eq!(from, "0x1111111111111111111111111111111111111111");
+        assert_eq!(to, "0x2222222222222222222222222222222222222222");
+        assert_eq!(amount, 10);
+    }
+
+    #[test]
+    fn parse_transfer_log_large_amount() {
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
+        // u64::MAX = 0xffffffffffffffff (16 hex chars)
+        let logs = vec![serde_json::json!({
+            "address": "0xtoken",
+            "topics": [
+                TRANSFER_EVENT_TOPIC,
+                "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ],
+            "data": "0x000000000000000000000000000000000000000000000000ffffffffffffffff"
+        })];
+        let (_from, _to, amount) = backend.parse_transfer_log(&logs).unwrap();
+        assert_eq!(amount, u64::MAX);
+    }
+
+    #[test]
+    fn parse_transfer_log_zero_amount() {
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
+        let logs = vec![serde_json::json!({
+            "address": "0xtoken",
+            "topics": [
+                TRANSFER_EVENT_TOPIC,
+                "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ],
+            "data": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        })];
+        let (_from, _to, amount) = backend.parse_transfer_log(&logs).unwrap();
+        assert_eq!(amount, 0);
+    }
+
+    #[test]
+    fn parse_transfer_log_case_insensitive_address_match() {
+        // Token contract address with mixed case should match lowercase log address
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xToKeN");
+        let logs = vec![serde_json::json!({
+            "address": "0xtoken", // lowercase
+            "topics": [
+                TRANSFER_EVENT_TOPIC,
+                "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ],
+            "data": "0x0000000000000000000000000000000000000000000000000000000000000001"
+        })];
+        let result = backend.parse_transfer_log(&logs);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn sha2_hash_deterministic() {
+        let h1 = sha2_hash(b"test data");
+        let h2 = sha2_hash(b"test data");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn sha2_hash_different_inputs() {
+        let h1 = sha2_hash(b"input a");
+        let h2 = sha2_hash(b"input b");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn sha2_hash_empty_input() {
+        // Empty input should produce a valid 32-byte hash
+        let h = sha2_hash(b"");
+        assert_eq!(h.len(), 32);
+    }
+
+    #[test]
+    fn sn_testnet_registry_is_valid_address() {
+        assert!(SN_TESTNET_AGENT_REGISTRY.starts_with("0x"));
+        // Ethereum addresses are 42 chars (0x + 40 hex)
+        assert_eq!(SN_TESTNET_AGENT_REGISTRY.len(), 42);
+    }
+
+    #[test]
+    fn new_backend_with_empty_strings() {
+        let b = StatusNetworkBackend::new("", "", "");
+        assert_eq!(b.rpc_url, "");
+        assert_eq!(b.registry_contract, "");
+        assert_eq!(b.token_contract, "");
+    }
+
+    #[test]
+    fn parse_transfer_log_missing_data_field() {
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
+        let logs = vec![serde_json::json!({
+            "address": "0xtoken",
+            "topics": [
+                TRANSFER_EVENT_TOPIC,
+                "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ]
+            // no "data" field
+        })];
+        // Should still parse, using 0 as default amount
+        let (_from, _to, amount) = backend.parse_transfer_log(&logs).unwrap();
+        assert_eq!(amount, 0);
+    }
+
+    #[test]
+    fn parse_transfer_log_only_two_topics_skipped() {
+        let backend = StatusNetworkBackend::new("http://localhost", "0xREG", "0xtoken");
+        // Transfer event signature + only 1 indexed param (should be skipped, needs 3)
+        let logs = vec![serde_json::json!({
+            "address": "0xtoken",
+            "topics": [
+                TRANSFER_EVENT_TOPIC,
+                "0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "data": "0x01"
+        })];
+        assert!(backend.parse_transfer_log(&logs).is_err());
+    }
 }

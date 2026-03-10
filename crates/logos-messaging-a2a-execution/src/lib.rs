@@ -192,4 +192,121 @@ mod tests {
         assert_eq!(details.from, "0xsender");
         assert_eq!(details.to, "0xrecipient");
     }
+
+    // --- Additional edge-case coverage ---
+
+    #[test]
+    fn agent_id_display() {
+        let id = AgentId("0xdeadbeef".into());
+        assert_eq!(format!("{}", id), "0xdeadbeef");
+    }
+
+    #[test]
+    fn agent_id_clone_and_equality() {
+        let a = AgentId("0x1234".into());
+        let b = a.clone();
+        assert_eq!(a, b);
+        let c = AgentId("0x5678".into());
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn agent_id_hash_consistency() {
+        use std::collections::HashSet;
+        let a = AgentId("0xaaa".into());
+        let b = AgentId("0xaaa".into());
+        let c = AgentId("0xbbb".into());
+        let mut set = HashSet::new();
+        set.insert(a);
+        set.insert(b); // duplicate, should not increase size
+        set.insert(c);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn agent_id_serialization_roundtrip() {
+        let id = AgentId("0xcafe".into());
+        let json = serde_json::to_string(&id).unwrap();
+        let deserialized: AgentId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn tx_hash_all_zeros() {
+        let hash = TxHash([0; 32]);
+        assert_eq!(hash.to_string(), "0".repeat(64));
+    }
+
+    #[test]
+    fn tx_hash_all_ff() {
+        let hash = TxHash([0xff; 32]);
+        assert_eq!(hash.to_string(), "ff".repeat(32));
+    }
+
+    #[test]
+    fn tx_hash_equality_and_copy() {
+        let h1 = TxHash([0xab; 32]);
+        let h2 = h1; // Copy
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn tx_hash_hash_consistency() {
+        use std::collections::HashSet;
+        let h1 = TxHash([1; 32]);
+        let h2 = TxHash([1; 32]);
+        let h3 = TxHash([2; 32]);
+        let mut set = HashSet::new();
+        set.insert(h1);
+        set.insert(h2);
+        set.insert(h3);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn transfer_details_inequality() {
+        let d1 = TransferDetails {
+            from: "0xa".into(),
+            to: "0xb".into(),
+            amount: 100,
+            block_number: 1,
+        };
+        let d2 = TransferDetails {
+            from: "0xa".into(),
+            to: "0xb".into(),
+            amount: 200, // different amount
+            block_number: 1,
+        };
+        assert_ne!(d1, d2);
+    }
+
+    #[test]
+    fn agent_id_from_card_with_capabilities() {
+        let card = AgentCard {
+            name: "agent".into(),
+            description: "desc".into(),
+            version: "1.0.0".into(),
+            capabilities: vec!["cap1".into(), "cap2".into()],
+            public_key: "0xpubkey123".into(),
+            intro_bundle: None,
+        };
+        let id = AgentId::from(&card);
+        assert_eq!(id.0, "0xpubkey123");
+    }
+
+    #[test]
+    fn agent_id_empty_string() {
+        let id = AgentId(String::new());
+        assert_eq!(format!("{}", id), "");
+        assert_eq!(id.0, "");
+    }
+
+    #[tokio::test]
+    async fn mock_backend_pay_different_amounts() {
+        let backend = MockBackend;
+        // Same tx hash regardless of amount (mock behavior)
+        let tx1 = backend.pay(&AgentId("0xa".into()), 0).await.unwrap();
+        let tx2 = backend.pay(&AgentId("0xa".into()), u64::MAX).await.unwrap();
+        assert_eq!(tx1, tx2); // Mock returns same hash
+    }
 }

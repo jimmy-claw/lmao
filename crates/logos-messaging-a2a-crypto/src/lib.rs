@@ -447,4 +447,170 @@ mod tests {
             "random identities should have different public keys"
         );
     }
+
+    // --- from_hex roundtrip through shared_key ---
+
+    #[test]
+    fn from_hex_identity_can_derive_shared_key() {
+        // Use a known secret to reconstruct and derive a session key
+        let known_secret = "ab".repeat(32);
+        let identity = AgentIdentity::from_hex(&known_secret).unwrap();
+        let bob = AgentIdentity::generate();
+        let key = identity.shared_key(&bob.public);
+        let enc = key.encrypt(b"test from reconstructed identity").unwrap();
+        let bob_key = bob.shared_key(&identity.public);
+        let dec = bob_key.decrypt(&enc).unwrap();
+        assert_eq!(dec, b"test from reconstructed identity");
+    }
+
+    #[test]
+    fn from_hex_odd_length_fails() {
+        // Odd number of hex chars
+        let result = AgentIdentity::from_hex("abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_public_key_odd_length_fails() {
+        let result = AgentIdentity::parse_public_key("abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn encrypt_binary_data() {
+        let alice = AgentIdentity::generate();
+        let bob = AgentIdentity::generate();
+        let key = alice.shared_key(&bob.public);
+
+        // All possible byte values
+        let data: Vec<u8> = (0..=255).collect();
+        let encrypted = key.encrypt(&data).unwrap();
+        let decrypted = key.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn encrypted_payload_fields_are_base64() {
+        let alice = AgentIdentity::generate();
+        let bob = AgentIdentity::generate();
+        let key = alice.shared_key(&bob.public);
+
+        let encrypted = key.encrypt(b"check base64").unwrap();
+        // Both fields should be valid base64
+        assert!(base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &encrypted.nonce
+        )
+        .is_ok());
+        assert!(base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &encrypted.ciphertext
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn encrypted_payload_nonce_is_12_bytes() {
+        let alice = AgentIdentity::generate();
+        let bob = AgentIdentity::generate();
+        let key = alice.shared_key(&bob.public);
+
+        let encrypted = key.encrypt(b"nonce length check").unwrap();
+        let nonce_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &encrypted.nonce)
+                .unwrap();
+        assert_eq!(
+            nonce_bytes.len(),
+            12,
+            "ChaCha20-Poly1305 nonce must be 12 bytes"
+        );
+    }
+
+    #[test]
+    fn ciphertext_longer_than_plaintext() {
+        let alice = AgentIdentity::generate();
+        let bob = AgentIdentity::generate();
+        let key = alice.shared_key(&bob.public);
+
+        let plaintext = b"short";
+        let encrypted = key.encrypt(plaintext).unwrap();
+        let ct_bytes = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &encrypted.ciphertext,
+        )
+        .unwrap();
+        // Poly1305 tag adds 16 bytes
+        assert_eq!(ct_bytes.len(), plaintext.len() + 16);
+    }
+
+    #[test]
+    fn intro_bundle_json_fields() {
+        let bundle = IntroBundle::new("deadbeef");
+        let json: serde_json::Value = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(json["agent_pubkey"], "deadbeef");
+        assert_eq!(json["version"], "1.0");
+        // Should have exactly 2 fields
+        assert_eq!(json.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn intro_bundle_deserialize_from_json_string() {
+        let json = r#"{"agent_pubkey":"aabb","version":"1.0"}"#;
+        let bundle: IntroBundle = serde_json::from_str(json).unwrap();
+        assert_eq!(bundle.agent_pubkey, "aabb");
+        assert_eq!(bundle.version, "1.0");
+    }
+
+    #[test]
+    fn shared_key_is_deterministic() {
+        let secret_a = "aa".repeat(32);
+        let secret_b = "bb".repeat(32);
+
+        let a1 = AgentIdentity::from_hex(&secret_a).unwrap();
+        let b1 = AgentIdentity::from_hex(&secret_b).unwrap();
+        let a2 = AgentIdentity::from_hex(&secret_a).unwrap();
+        let b2 = AgentIdentity::from_hex(&secret_b).unwrap();
+
+        let key1 = a1.shared_key(&b1.public);
+        let key2 = a2.shared_key(&b2.public);
+
+        // Same secret keys should produce same shared key
+        let enc = key1.encrypt(b"deterministic").unwrap();
+        let dec = key2.decrypt(&enc).unwrap();
+        assert_eq!(dec, b"deterministic");
+    }
+
+    #[test]
+    #[should_panic]
+    fn decrypt_wrong_nonce_length_panics() {
+        let alice = AgentIdentity::generate();
+        let bob = AgentIdentity::generate();
+        let key = alice.shared_key(&bob.public);
+
+        // 8-byte nonce instead of 12 — Nonce::from_slice panics on wrong length
+        let nonce_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 8]);
+        let payload = EncryptedPayload {
+            nonce: nonce_b64,
+            ciphertext: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                [0u8; 32],
+            ),
+        };
+        let _ = key.decrypt(&payload);
+    }
+
+    #[test]
+    fn multiple_encryptions_all_decrypt_correctly() {
+        let alice = AgentIdentity::generate();
+        let bob = AgentIdentity::generate();
+        let key = alice.shared_key(&bob.public);
+
+        for i in 0..20 {
+            let msg = format!("message number {}", i);
+            let enc = key.encrypt(msg.as_bytes()).unwrap();
+            let dec = key.decrypt(&enc).unwrap();
+            assert_eq!(dec, msg.as_bytes());
+        }
+    }
 }
