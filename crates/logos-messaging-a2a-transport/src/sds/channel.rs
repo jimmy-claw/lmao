@@ -10,7 +10,7 @@
 //! - Incoming buffer with dependency resolution
 //! - Sync messages for consistency protocol
 //!
-//! Reference: https://forum.research.logos.co/t/introducing-the-reliable-channel-api/580
+//! Reference: <https://forum.research.logos.co/t/introducing-the-reliable-channel-api/580>
 
 use crate::Transport;
 use anyhow::{Context, Result};
