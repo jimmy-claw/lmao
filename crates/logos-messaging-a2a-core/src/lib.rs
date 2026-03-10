@@ -2,6 +2,7 @@ pub mod agent;
 pub mod envelope;
 pub mod presence;
 pub mod registry;
+pub mod retry;
 pub mod task;
 pub mod topics;
 
@@ -9,4 +10,5 @@ pub mod topics;
 pub use agent::*;
 pub use envelope::*;
 pub use presence::*;
+pub use retry::*;
 pub use task::*;
