@@ -258,3 +258,183 @@ Agent A                    Codex Node               Agent B
   │                            │◀── download(CID) ────│
   │                            │── data ──────────────▶│
 ```
+
+## Message Retry with Exponential Backoff
+
+P2P transports are inherently unreliable. The retry layer wraps the SDS
+`send_reliable` path and replays failed sends with exponential backoff.
+
+```
+RetryConfig
+├── max_attempts: u32          default 5
+├── base_delay_ms: u64         default 1 000 ms
+├── max_delay_ms: u64          default 60 000 ms
+└── jitter: bool               default true
+```
+
+Delay for attempt `n` (0-indexed):
+
+```
+min(base_delay_ms × 2^n, max_delay_ms)  [+ random jitter]
+```
+
+```
+                        RetryLayer<T: Transport>
+                               │
+           attempt 0           │
+   send_reliable() ───────────▶│──── Ok ──▶ return
+                               │
+                          Err? │
+                               ▼
+                   sleep(base_delay_ms)
+                               │
+           attempt 1           │
+   send_reliable() ───────────▶│──── Ok ──▶ return
+                               │
+                          Err? │
+                               ▼
+                  sleep(base_delay_ms × 2)
+                               │
+              ...              │
+                               │
+       attempt max_attempts-1  │
+   send_reliable() ───────────▶│──── Ok ──▶ return
+                               │
+                          Err? │
+                               ▼
+                    return final error
+```
+
+Key design points:
+- Only **transport errors** (`Err`) are retried. A successful send that is
+  not ACKed (`Ok((_, false))`) is left to the SDS retransmission loop.
+- Jitter adds a uniform random offset in `[0, base_delay] / 2` to avoid
+  thundering-herd problems when many agents retry simultaneously.
+- Enable via `WakuA2ANode::with_retry(RetryConfig { ... })`.
+
+Implementation:
+- `logos-messaging-a2a-core::RetryConfig` — configuration type.
+- `logos-messaging-a2a-node::retry::RetryLayer` — the retry wrapper.
+
+## Waku Presence Broadcasts
+
+Agents periodically broadcast `PresenceAnnouncement` messages on the
+well-known topic `/lmao/1/presence/proto`. Peers listen, build a live
+`PeerMap`, and query it by capability.
+
+```
+PresenceAnnouncement
+├── agent_id: String           secp256k1 compressed pubkey hex
+├── name: String               human-readable agent name
+├── capabilities: Vec<String>  e.g. ["summarize", "translate"]
+├── waku_topic: String         where this agent receives tasks
+├── ttl_secs: u64              validity window
+└── signature: Option<Vec<u8>> secp256k1 over canonical JSON
+```
+
+### Signature Verification
+
+Announcements are signed over a **canonical JSON** serialization (fixed
+key order, `signature` field excluded) using the agent's secp256k1 key.
+Verifiers decode `agent_id` to a public key and check the DER-encoded
+signature, rejecting tampered or spoofed announcements.
+
+### PeerMap
+
+```
+PeerMap (Mutex<HashMap<agent_id, PeerInfo>>)
+│
+├── update(announcement)       insert / refresh an entry
+├── get(agent_id)              lookup, returns None if expired
+├── find_by_capability(cap)    filter live peers by capability
+├── all_live()                 all non-expired peers
+└── evict_expired()            garbage-collect stale entries
+```
+
+Entries expire when `now - last_seen > ttl_secs`. A TTL of 0 means the
+entry is always considered expired (useful for one-shot announcements).
+Expired entries are lazily filtered on read and batch-removed via
+`evict_expired()`.
+
+### Combined Discovery
+
+`WakuA2ANode::discover_all()` merges two discovery sources and
+deduplicates by public key:
+
+```
+                  ┌───────────────────────┐
+                  │   discover_all()       │
+                  └───────┬───────────────┘
+                          │
+              ┌───────────┼───────────────┐
+              ▼                           ▼
+   poll_presence()              registry.list_agents()
+   (Waku topic scan)           (persistent on-chain)
+              │                           │
+              └───────────┬───────────────┘
+                          ▼
+                 deduplicate by pubkey
+                          │
+                          ▼
+                  Vec<AgentCard>
+```
+
+Implementation:
+- `logos-messaging-a2a-core::PresenceAnnouncement` — wire type + signing.
+- `logos-messaging-a2a-node::presence::{PeerInfo, PeerMap}` — live peer tracking.
+
+## MCP Bridge Architecture
+
+The MCP bridge (`logos-messaging-a2a-mcp`) exposes discovered Waku A2A
+agents as MCP tools, letting MCP hosts like Claude Desktop or Cursor
+interact with the decentralized agent fleet.
+
+```
+┌─────────────────┐   stdio    ┌──────────────────────────┐   Waku    ┌──────────────┐
+│   MCP Host      │◀─────────▶│   LogosA2ABridge          │◀────────▶│  Agent Fleet  │
+│  (Claude, etc.) │            │                          │           │  (Waku P2P)   │
+│                 │            │  ┌────────────────────┐  │           │               │
+│  discover_agents│───────────▶│  │ WakuA2ANode<T>     │  │           │  Agent A      │
+│  send_to_agent  │            │  │  .discover()       │──┼──────────▶│  Agent B      │
+│  list_cached    │            │  │  .send_text()      │  │           │  Agent C      │
+│                 │            │  │  .poll_tasks()     │  │           │               │
+│                 │◀───────────│  └────────────────────┘  │           │               │
+│   tool results  │            │                          │           │               │
+│                 │            │  AgentRegistry (cache)    │           │               │
+└─────────────────┘            └──────────────────────────┘           └──────────────┘
+```
+
+### MCP Tools
+
+| Tool                | Description                                             |
+|---------------------|---------------------------------------------------------|
+| `discover_agents`   | Poll the Waku discovery topic; cache and return agents  |
+| `send_to_agent`     | Send a message to a named agent and poll for a response |
+| `list_cached_agents`| Return cached agents without a network call             |
+
+### Request Flow
+
+```
+Claude Desktop            MCP Bridge                  Waku Network
+  │                          │                            │
+  │── discover_agents ──────▶│                            │
+  │                          │── node.discover() ────────▶│
+  │                          │◀── Vec<AgentCard> ────────│
+  │                          │   cache in AgentRegistry   │
+  │◀── agent list ──────────│                            │
+  │                          │                            │
+  │── send_to_agent ────────▶│                            │
+  │   { name, message }      │── lookup name in cache     │
+  │                          │── node.send_text() ───────▶│
+  │                          │                            │
+  │                          │── poll loop (2s interval)  │
+  │                          │── node.poll_tasks() ──────▶│
+  │                          │◀── Task(Completed) ───────│
+  │◀── agent response ─────│                            │
+```
+
+The bridge runs as a stdio server (`rmcp` transport-io) — no HTTP server
+is involved. It is configured via CLI flags:
+
+- `--waku-url` — nwaku REST API endpoint (default `http://localhost:8645`)
+- `--timeout` — seconds to wait for agent responses (default `30`)
