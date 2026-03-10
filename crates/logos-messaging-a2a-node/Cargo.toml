@@ -18,3 +18,4 @@ hex = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 fastrand = "2"
+tracing = { workspace = true }

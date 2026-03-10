@@ -2256,6 +2256,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2354,6 +2355,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -2384,6 +2386,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tracing",
  "uuid",
  "waku-bindings",
 ]

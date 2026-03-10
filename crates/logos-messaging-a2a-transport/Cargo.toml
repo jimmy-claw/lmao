@@ -21,6 +21,7 @@ hex = { workspace = true }
 sha2 = { workspace = true }
 bloomfilter = { workspace = true }
 base64 = { version = "0.22", optional = true }
+tracing = { workspace = true }
 waku-bindings = { git = "https://github.com/jimmy-claw/logos-delivery-rust-bindings", branch = "jimmy/rln-optional", default-features = false, optional = true }
 
 [build-dependencies]

@@ -51,9 +51,9 @@ impl SdsBloomFilter {
             *count = 0;
             // Note: this means we lose dedup state for old messages.
             // In practice, old messages should already be in local history.
-            eprintln!(
-                "[sds::bloom] filter reset after reaching capacity {}",
-                self.capacity
+            tracing::debug!(
+                capacity = self.capacity,
+                "Bloom filter reset after reaching capacity"
             );
         }
     }
