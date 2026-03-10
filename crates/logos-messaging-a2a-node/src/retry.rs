@@ -46,11 +46,11 @@ impl<'a, T: Transport> RetryLayer<'a, T> {
                     // Don't sleep after the final attempt
                     if attempt + 1 < self.config.max_attempts {
                         let delay = self.compute_delay(attempt);
-                        eprintln!(
-                            "[retry] Attempt {}/{} failed, retrying in {}ms",
-                            attempt + 1,
-                            self.config.max_attempts,
-                            delay.as_millis(),
+                        tracing::debug!(
+                            attempt = attempt + 1,
+                            max_attempts = self.config.max_attempts,
+                            delay_ms = delay.as_millis() as u64,
+                            "Send attempt failed, retrying"
                         );
                         tokio::time::sleep(delay).await;
                     }

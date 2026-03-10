@@ -388,10 +388,7 @@ impl<T: Transport> WakuA2ANode<T> {
             .publish(topics::PRESENCE, &payload)
             .await
             .context("Failed to publish presence announcement")?;
-        eprintln!(
-            "[node] Presence announced: {} (TTL={}s)",
-            self.card.name, ttl_secs
-        );
+        tracing::info!(name = %self.card.name, ttl_secs, "Presence announced");
         Ok(())
     }
 
@@ -411,20 +408,20 @@ impl<T: Transport> WakuA2ANode<T> {
             if let Ok(A2AEnvelope::Presence(ann)) = serde_json::from_slice::<A2AEnvelope>(&msg) {
                 if ann.agent_id != self.pubkey() {
                     if let Err(e) = ann.verify() {
-                        eprintln!(
-                            "[node] Presence rejected (invalid signature): {} ({}) — {}",
-                            ann.name,
-                            &ann.agent_id[..8.min(ann.agent_id.len())],
-                            e
+                        tracing::warn!(
+                            name = %ann.name,
+                            agent_id = %&ann.agent_id[..8.min(ann.agent_id.len())],
+                            error = %e,
+                            "Presence rejected (invalid signature)"
                         );
                         continue;
                     }
                     self.peer_map.update(&ann);
-                    eprintln!(
-                        "[node] Presence received: {} ({}) caps={:?}",
-                        ann.name,
-                        &ann.agent_id[..8.min(ann.agent_id.len())],
-                        ann.capabilities
+                    tracing::info!(
+                        name = %ann.name,
+                        agent_id = %&ann.agent_id[..8.min(ann.agent_id.len())],
+                        capabilities = ?ann.capabilities,
+                        "Presence received"
                     );
                     count += 1;
                 }
@@ -480,7 +477,7 @@ impl<T: Transport> WakuA2ANode<T> {
             .publish(topics::DISCOVERY, &payload)
             .await
             .context("Failed to announce AgentCard")?;
-        eprintln!("[node] Announced: {} ({})", self.card.name, self.pubkey());
+        tracing::info!(name = %self.card.name, pubkey = %self.pubkey(), "Announced");
         Ok(())
     }
 
@@ -605,9 +602,9 @@ impl<T: Transport> WakuA2ANode<T> {
         };
 
         if acked {
-            eprintln!("[node] Task {} sent and ACKed", task.id);
+            tracing::info!(task_id = %task.id, "Task sent and ACKed");
         } else {
-            eprintln!("[node] Task {} sent but no ACK received", task.id);
+            tracing::warn!(task_id = %task.id, "Task sent but no ACK received");
         }
         Ok(acked)
     }
@@ -758,12 +755,12 @@ impl<T: Transport> WakuA2ANode<T> {
                     match self.decrypt_task(identity, &sender_pubkey, &encrypted) {
                         Ok(task) => self.maybe_fetch_offloaded(task).await,
                         Err(e) => {
-                            eprintln!("[node] Failed to decrypt task: {}", e);
+                            tracing::error!(error = %e, "Failed to decrypt task");
                             Ok(None)
                         }
                     }
                 } else {
-                    eprintln!("[node] Received encrypted task but no identity configured");
+                    tracing::warn!("Received encrypted task but no identity configured");
                     Ok(None)
                 }
             }
@@ -784,7 +781,7 @@ impl<T: Transport> WakuA2ANode<T> {
                     .context("Failed to deserialize offloaded task")?;
                 return Ok(Some(original));
             }
-            eprintln!("[node] Task has payload_cid but no storage backend configured");
+            tracing::warn!(payload_cid = %cid, "Task has payload_cid but no storage backend configured");
         }
         Ok(Some(task))
     }
@@ -814,7 +811,7 @@ impl<T: Transport> WakuA2ANode<T> {
             .await
             .context("Failed to send response")?;
 
-        eprintln!("[node] Responded to task {}", task.id);
+        tracing::info!(task_id = %task.id, "Responded to task");
         Ok(())
     }
 
@@ -849,7 +846,7 @@ impl<T: Transport> WakuA2ANode<T> {
                 .await
                 .context("Failed to publish stream chunk")?;
         }
-        eprintln!("[node] Streamed {} chunk(s) for task {}", total, task.id);
+        tracing::info!(task_id = %task.id, chunks = total, "Streamed chunks for task");
         Ok(())
     }
 
@@ -946,9 +943,10 @@ impl<T: Transport> WakuA2ANode<T> {
         let tx_hash = match &task.payment_tx {
             Some(tx) if !tx.is_empty() => tx.clone(),
             _ => {
-                eprintln!(
-                    "[node] Rejecting task {} — no payment tx hash provided (need {} tokens)",
-                    task.id, pay_cfg.required_amount
+                tracing::warn!(
+                    task_id = %task.id,
+                    required_amount = pay_cfg.required_amount,
+                    "Rejecting task — no payment tx hash provided"
                 );
                 return false;
             }
@@ -958,9 +956,10 @@ impl<T: Transport> WakuA2ANode<T> {
         {
             let seen = self.seen_tx_hashes.lock().unwrap();
             if seen.contains(&tx_hash) {
-                eprintln!(
-                    "[node] Rejecting task {} — replayed payment tx {}",
-                    task.id, tx_hash
+                tracing::warn!(
+                    task_id = %task.id,
+                    tx_hash = %tx_hash,
+                    "Rejecting task — replayed payment tx"
                 );
                 return false;
             }
@@ -974,9 +973,11 @@ impl<T: Transport> WakuA2ANode<T> {
                     true
                 }
                 _ => {
-                    eprintln!(
-                        "[node] Rejecting task {} — insufficient payment (need {}, got {:?})",
-                        task.id, pay_cfg.required_amount, task.payment_amount
+                    tracing::warn!(
+                        task_id = %task.id,
+                        required = pay_cfg.required_amount,
+                        got = ?task.payment_amount,
+                        "Rejecting task — insufficient payment"
                     );
                     false
                 }
@@ -986,18 +987,22 @@ impl<T: Transport> WakuA2ANode<T> {
             match pay_cfg.backend.verify_transfer(&tx_hash).await {
                 Ok(details) => {
                     if details.amount < pay_cfg.required_amount {
-                        eprintln!(
-                            "[node] Rejecting task {} — on-chain amount {} < required {}",
-                            task.id, details.amount, pay_cfg.required_amount
+                        tracing::warn!(
+                            task_id = %task.id,
+                            on_chain_amount = details.amount,
+                            required = pay_cfg.required_amount,
+                            "Rejecting task — on-chain amount below required"
                         );
                         return false;
                     }
                     if !pay_cfg.receiving_account.is_empty()
                         && details.to.to_lowercase() != pay_cfg.receiving_account.to_lowercase()
                     {
-                        eprintln!(
-                            "[node] Rejecting task {} — payment sent to {} but expected {}",
-                            task.id, details.to, pay_cfg.receiving_account
+                        tracing::warn!(
+                            task_id = %task.id,
+                            actual_recipient = %details.to,
+                            expected_recipient = %pay_cfg.receiving_account,
+                            "Rejecting task — payment sent to wrong address"
                         );
                         return false;
                     }
@@ -1006,9 +1011,10 @@ impl<T: Transport> WakuA2ANode<T> {
                     true
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[node] Rejecting task {} — on-chain verification failed: {}",
-                        task.id, e
+                    tracing::error!(
+                        task_id = %task.id,
+                        error = %e,
+                        "Rejecting task — on-chain verification failed"
                     );
                     false
                 }

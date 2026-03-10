@@ -36,6 +36,8 @@ anyhow = "1"
 async-trait = "0.1"
 sha2 = "0.10"
 bloomfilter = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dependencies]
 logos-messaging-a2a-crypto = { path = "crates/logos-messaging-a2a-crypto" }

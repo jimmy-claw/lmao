@@ -4,6 +4,7 @@ use logos_messaging_a2a_core::Task;
 use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 use std::collections::HashSet;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -145,6 +146,11 @@ fn print_peer(agent_id: &str, info: &logos_messaging_a2a_node::presence::PeerInf
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
+
     let cli = Cli::parse();
     let transport = LogosMessagingTransport::new(&cli.waku);
 
