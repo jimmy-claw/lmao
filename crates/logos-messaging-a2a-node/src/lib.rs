@@ -1076,8 +1076,10 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
+    type PublishedMessages = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
     struct MockTransport {
-        published: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+        published: PublishedMessages,
         state: Arc<Mutex<MockState>>,
     }
 

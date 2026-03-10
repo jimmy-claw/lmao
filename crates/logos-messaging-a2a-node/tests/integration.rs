@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Helper: create a node pair sharing one transport.
-
 fn make_arc_pair() -> (
     Arc<WakuA2ANode<InMemoryTransport>>,
     Arc<WakuA2ANode<InMemoryTransport>>,

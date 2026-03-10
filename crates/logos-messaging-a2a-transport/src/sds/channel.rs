@@ -698,7 +698,7 @@ mod tests {
         let delivered = bob.receive(&raw1);
         // msg1 has no deps (or deps are satisfied), delivers immediately
         // Then resolving buffered msg2 should also deliver
-        assert!(delivered.len() >= 1);
+        assert!(!delivered.is_empty());
     }
 
     #[tokio::test]
