@@ -55,3 +55,61 @@ impl ExecutionBackend for LezExecutionBackend {
         unimplemented!("LEZ execution backend not yet available — tracking in issue #4")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lez_new_creates_instance() {
+        let _backend = LezExecutionBackend::new();
+    }
+
+    #[test]
+    fn lez_default_creates_instance() {
+        let _backend = LezExecutionBackend::default();
+    }
+
+    #[test]
+    fn lez_new_and_default_are_equivalent() {
+        // Both constructors should work without panic
+        let _a = LezExecutionBackend::new();
+        let _b = LezExecutionBackend::default();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "LEZ execution backend not yet available")]
+    async fn lez_register_agent_panics() {
+        let backend = LezExecutionBackend::new();
+        let card = AgentCard {
+            name: "test".into(),
+            description: "test agent".into(),
+            version: "0.1.0".into(),
+            capabilities: vec![],
+            public_key: "0xdead".into(),
+            intro_bundle: None,
+        };
+        let _ = backend.register_agent(&card).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "LEZ execution backend not yet available")]
+    async fn lez_pay_panics() {
+        let backend = LezExecutionBackend::new();
+        let _ = backend.pay(&AgentId("0x1234".into()), 100).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "LEZ execution backend not yet available")]
+    async fn lez_balance_panics() {
+        let backend = LezExecutionBackend::new();
+        let _ = backend.balance(&AgentId("0x1234".into())).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "LEZ execution backend not yet available")]
+    async fn lez_verify_transfer_panics() {
+        let backend = LezExecutionBackend::new();
+        let _ = backend.verify_transfer("0xdeadbeef").await;
+    }
+}
