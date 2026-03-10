@@ -1,8 +1,10 @@
 pub mod presence;
+pub mod retry;
 
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 use logos_messaging_a2a_core::registry::AgentRegistry;
+use logos_messaging_a2a_core::RetryConfig;
 pub use logos_messaging_a2a_core::Task as TaskType;
 use logos_messaging_a2a_core::{
     topics, A2AEnvelope, AgentCard, Message, PresenceAnnouncement, Task, TaskStreamChunk,
@@ -125,6 +127,9 @@ pub struct WakuA2ANode<T: Transport> {
     registry: Option<Arc<dyn AgentRegistry>>,
     /// Buffered stream chunks keyed by task_id, sorted by chunk_index.
     stream_chunks: std::sync::Mutex<HashMap<String, Vec<TaskStreamChunk>>>,
+    /// Optional retry configuration for exponential-backoff retries of
+    /// transport send failures.
+    retry_config: Option<RetryConfig>,
 }
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -165,6 +170,7 @@ impl<T: Transport> WakuA2ANode<T> {
             presence_rx: tokio::sync::Mutex::new(None),
             registry: None,
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
+            retry_config: None,
         }
     }
 
@@ -213,6 +219,7 @@ impl<T: Transport> WakuA2ANode<T> {
             presence_rx: tokio::sync::Mutex::new(None),
             registry: None,
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
+            retry_config: None,
         }
     }
 
@@ -258,6 +265,7 @@ impl<T: Transport> WakuA2ANode<T> {
             presence_rx: tokio::sync::Mutex::new(None),
             registry: None,
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
+            retry_config: None,
         }
     }
 
@@ -305,6 +313,7 @@ impl<T: Transport> WakuA2ANode<T> {
             presence_rx: tokio::sync::Mutex::new(None),
             registry: None,
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
+            retry_config: None,
         }
     }
 
@@ -324,6 +333,15 @@ impl<T: Transport> WakuA2ANode<T> {
     /// require payment proof before processing.
     pub fn with_payment(mut self, config: PaymentConfig) -> Self {
         self.payment = Some(config);
+        self
+    }
+
+    /// Enable exponential-backoff retry for transport send failures.
+    ///
+    /// When configured, `send_task` / `send_task_to` will retry on transport
+    /// errors up to `config.max_attempts` times with exponential backoff.
+    pub fn with_retry(mut self, config: RetryConfig) -> Self {
+        self.retry_config = Some(config);
         self
     }
 
@@ -445,6 +463,11 @@ impl<T: Transport> WakuA2ANode<T> {
         &self.channel
     }
 
+    /// Get the current retry configuration, if any.
+    pub fn retry_config(&self) -> Option<&RetryConfig> {
+        self.retry_config.as_ref()
+    }
+
     /// Broadcast this agent's card on the discovery topic.
     ///
     /// Discovery uses raw A2AEnvelope (not SDS-wrapped) since it's a
@@ -555,6 +578,9 @@ impl<T: Transport> WakuA2ANode<T> {
     /// When a [`PaymentConfig`] with `auto_pay = true` is set, the node
     /// calls `backend.pay()` before sending and attaches the TX hash to
     /// the task envelope.
+    ///
+    /// When a [`RetryConfig`] is set (via [`with_retry`](Self::with_retry)),
+    /// transport-level failures are retried with exponential backoff.
     pub async fn send_task_to(
         &self,
         task: &Task,
@@ -566,11 +592,17 @@ impl<T: Transport> WakuA2ANode<T> {
 
         // Use SDS reliable delivery — the SDS message_id (SHA256 of payload)
         // is used for ACK routing, not the task UUID.
-        let (_msg, acked) = self
-            .channel
-            .send_reliable(&topic, &payload)
-            .await
-            .context("SDS publish failed")?;
+        let (_msg, acked) = if let Some(ref retry_cfg) = self.retry_config {
+            retry::RetryLayer::new(&self.channel, retry_cfg)
+                .send_reliable(&topic, &payload)
+                .await
+                .context("SDS publish failed (after retries)")?
+        } else {
+            self.channel
+                .send_reliable(&topic, &payload)
+                .await
+                .context("SDS publish failed")?
+        };
 
         if acked {
             eprintln!("[node] Task {} sent and ACKed", task.id);
