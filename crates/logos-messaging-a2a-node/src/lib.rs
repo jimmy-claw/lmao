@@ -254,7 +254,7 @@ impl<T: Transport> WakuA2ANode<T> {
         self
     }
 
-    /// Enable x402-style payment flow via an [`ExecutionBackend`].
+    /// Enable x402-style payment flow via an [`ExecutionBackend`](logos_messaging_a2a_execution::ExecutionBackend).
     ///
     /// When configured, outgoing tasks can auto-pay and incoming tasks can
     /// require payment proof before processing.
