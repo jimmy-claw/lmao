@@ -262,9 +262,11 @@ impl<T: Transport> MessageChannel<T> {
 
         for attempt in 0..=self.config.max_retries {
             if attempt > 0 {
-                eprintln!(
-                    "[sds] retransmit attempt {}/{} for {}",
-                    attempt, self.config.max_retries, message_id
+                tracing::debug!(
+                    attempt,
+                    max_retries = self.config.max_retries,
+                    message_id = %message_id,
+                    "SDS retransmit attempt"
                 );
             }
 
@@ -291,9 +293,10 @@ impl<T: Transport> MessageChannel<T> {
         let _ = self.transport.unsubscribe(&ack_topic).await;
         self.bloom.set(&message_id);
         self.record_in_history(&message_id, ts);
-        eprintln!(
-            "[sds] no ACK after {} retries for {}",
-            self.config.max_retries, message_id
+        tracing::warn!(
+            retries = self.config.max_retries,
+            message_id = %message_id,
+            "No ACK after retries"
         );
         Ok((msg, false))
     }
