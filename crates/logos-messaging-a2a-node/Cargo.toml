@@ -19,3 +19,6 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 fastrand = "2"
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

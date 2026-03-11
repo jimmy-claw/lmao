@@ -2354,6 +2354,7 @@ dependencies = [
  "logos-messaging-a2a-transport",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",
