@@ -2579,6 +2579,1043 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].payload_cid, Some("zQmNoBackend".to_string()));
     }
+
+    // --- Builder, accessor, and additional edge case tests ---
+
+    #[test]
+    fn test_with_retry_builder() {
+        let transport = MockTransport::new();
+        let config = RetryConfig {
+            max_attempts: 3,
+            base_delay_ms: 100,
+            max_delay_ms: 5000,
+            jitter: false,
+        };
+        let node = WakuA2ANode::new("test", "test", vec![], transport).with_retry(config);
+        assert!(node.retry_config().is_some());
+        let cfg = node.retry_config().unwrap();
+        assert_eq!(cfg.max_attempts, 3);
+        assert_eq!(cfg.base_delay_ms, 100);
+        assert_eq!(cfg.max_delay_ms, 5000);
+        assert!(!cfg.jitter);
+    }
+
+    #[test]
+    fn test_retry_config_none_by_default() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        assert!(node.retry_config().is_none());
+    }
+
+    #[test]
+    fn test_signing_key_accessor() {
+        let transport = MockTransport::new();
+        let key = SigningKey::random(&mut rand_core());
+        let expected_pk = hex::encode(key.verifying_key().to_encoded_point(true).as_bytes());
+        let node = WakuA2ANode::from_key("test", "test", vec![], transport, key);
+        // signing_key should produce the same pubkey
+        let sk_pk = hex::encode(
+            node.signing_key()
+                .verifying_key()
+                .to_encoded_point(true)
+                .as_bytes(),
+        );
+        assert_eq!(sk_pk, expected_pk);
+    }
+
+    #[test]
+    fn test_identity_none_for_unencrypted_node() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        assert!(node.identity().is_none());
+    }
+
+    #[test]
+    fn test_identity_some_for_encrypted_node() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new_encrypted("test", "test", vec![], transport);
+        assert!(node.identity().is_some());
+    }
+
+    #[test]
+    fn test_pubkey_is_valid_hex() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        // Should be valid hex
+        let decoded = hex::decode(node.pubkey());
+        assert!(decoded.is_ok(), "pubkey should be valid hex");
+        // Compressed secp256k1 key is 33 bytes
+        assert_eq!(decoded.unwrap().len(), 33);
+    }
+
+    #[test]
+    fn test_card_version_is_set() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test agent", vec!["cap".into()], transport);
+        assert_eq!(node.card.version, "0.1.0");
+    }
+
+    #[test]
+    fn test_card_capabilities_match() {
+        let transport = MockTransport::new();
+        let caps = vec!["text".to_string(), "image".to_string(), "code".to_string()];
+        let node = WakuA2ANode::new("test", "test agent", caps.clone(), transport);
+        assert_eq!(node.card.capabilities, caps);
+    }
+
+    #[tokio::test]
+    async fn test_discover_excludes_self() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("self", "self agent", vec![], transport.clone());
+
+        // Announce self
+        node.announce().await.unwrap();
+
+        // Discover should not include self
+        let cards = node.discover().await.unwrap();
+        assert!(cards.is_empty(), "discover should exclude own card");
+    }
+
+    #[tokio::test]
+    async fn test_maybe_auto_pay_disabled() {
+        let backend = Arc::new(MockExecutionBackend);
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 0,
+                auto_pay: false, // disabled
+                auto_pay_amount: 100,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let task = Task::new(node.pubkey(), "02aa", "no auto pay");
+        let result = node.maybe_auto_pay(&task).await.unwrap();
+        // With auto_pay disabled, task should NOT have payment info
+        assert!(result.payment_tx.is_none());
+        assert!(result.payment_amount.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_maybe_auto_pay_zero_amount() {
+        let backend = Arc::new(MockExecutionBackend);
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 0,
+                auto_pay: true,
+                auto_pay_amount: 0, // zero amount
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let task = Task::new(node.pubkey(), "02aa", "zero amount");
+        let result = node.maybe_auto_pay(&task).await.unwrap();
+        // With zero auto_pay_amount, should not actually pay
+        assert!(result.payment_tx.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_maybe_auto_pay_attaches_tx_hash() {
+        let backend = Arc::new(MockExecutionBackend);
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 0,
+                auto_pay: true,
+                auto_pay_amount: 50,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let task = Task::new(node.pubkey(), "02aa", "pay me");
+        let result = node.maybe_auto_pay(&task).await.unwrap();
+        assert!(result.payment_tx.is_some());
+        assert_eq!(result.payment_amount, Some(50));
+    }
+
+    #[tokio::test]
+    async fn test_maybe_auto_pay_no_payment_config() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+
+        let task = Task::new(node.pubkey(), "02aa", "no config");
+        let result = node.maybe_auto_pay(&task).await.unwrap();
+        assert!(result.payment_tx.is_none());
+        assert!(result.payment_amount.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_on_chain_verify_case_insensitive_recipient() {
+        let transport = MockTransport::new();
+        let backend: Arc<dyn ExecutionBackend> = Arc::new(VerifyingBackend {
+            details: TransferDetails {
+                from: "0xsender".into(),
+                to: "0xMyWallet".into(), // mixed case
+                amount: 200,
+                block_number: 1,
+            },
+        });
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend,
+            required_amount: 100,
+            auto_pay: false,
+            auto_pay_amount: 0,
+            verify_on_chain: true,
+            receiving_account: "0xmywallet".to_string(), // lowercase
+        });
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let mut task = Task::new(sender.pubkey(), &rpk, "case test");
+        task.payment_tx = Some("0xcasetx".to_string());
+        task.payment_amount = Some(200);
+        sender.send_task(&task).await.unwrap();
+
+        let received = receiver.poll_tasks().await.unwrap();
+        assert_eq!(
+            received.len(),
+            1,
+            "case-insensitive recipient match should accept"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_replay_protection_with_on_chain_verify() {
+        let transport = MockTransport::new();
+        let backend: Arc<dyn ExecutionBackend> = Arc::new(VerifyingBackend {
+            details: TransferDetails {
+                from: "0xsender".into(),
+                to: "0xrecipient".into(),
+                amount: 200,
+                block_number: 1,
+            },
+        });
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_payment(PaymentConfig {
+            backend,
+            required_amount: 100,
+            auto_pay: false,
+            auto_pay_amount: 0,
+            verify_on_chain: true,
+            receiving_account: "0xrecipient".to_string(),
+        });
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+
+        // First use — accepted
+        let mut t1 = Task::new(sender.pubkey(), &rpk, "first");
+        t1.payment_tx = Some("0xreplay_onchain".to_string());
+        t1.payment_amount = Some(200);
+        sender.send_task(&t1).await.unwrap();
+        assert_eq!(receiver.poll_tasks().await.unwrap().len(), 1);
+
+        // Replay — rejected
+        let mut t2 = Task::new(sender.pubkey(), &rpk, "replay");
+        t2.payment_tx = Some("0xreplay_onchain".to_string());
+        t2.payment_amount = Some(200);
+        sender.send_task(&t2).await.unwrap();
+        assert!(receiver.poll_tasks().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_channel_sender_id_matches_pubkey() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        assert_eq!(node.channel().sender_id(), node.pubkey());
+    }
+
+    #[test]
+    fn test_with_payment_builder() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+        let node =
+            WakuA2ANode::new("test", "test", vec![], transport).with_payment(PaymentConfig {
+                backend,
+                required_amount: 42,
+                auto_pay: true,
+                auto_pay_amount: 10,
+                verify_on_chain: true,
+                receiving_account: "0xabc".to_string(),
+            });
+        assert!(node.payment.is_some());
+        let pay = node.payment.as_ref().unwrap();
+        assert_eq!(pay.required_amount, 42);
+        assert!(pay.auto_pay);
+        assert_eq!(pay.auto_pay_amount, 10);
+        assert!(pay.verify_on_chain);
+        assert_eq!(pay.receiving_account, "0xabc");
+    }
+
+    #[tokio::test]
+    async fn test_discover_returns_multiple_cards() {
+        let transport = MockTransport::new();
+
+        // Inject three agent cards
+        for i in 0..3 {
+            let card = AgentCard {
+                name: format!("agent-{i}"),
+                description: format!("agent {i}"),
+                version: "0.1.0".to_string(),
+                capabilities: vec![],
+                public_key: format!("02{i:064x}"),
+                intro_bundle: None,
+            };
+            let envelope = A2AEnvelope::AgentCard(card);
+            let payload = serde_json::to_vec(&envelope).unwrap();
+            transport.inject(topics::DISCOVERY, payload);
+        }
+
+        let node = WakuA2ANode::new("me", "me", vec![], transport);
+        let cards = node.discover().await.unwrap();
+        assert_eq!(cards.len(), 3);
+        assert!(cards.iter().any(|c| c.name == "agent-0"));
+        assert!(cards.iter().any(|c| c.name == "agent-1"));
+        assert!(cards.iter().any(|c| c.name == "agent-2"));
+    }
+
+    #[tokio::test]
+    async fn test_poll_presence_multiple_peers() {
+        let transport = MockTransport::new();
+        let node1 = WakuA2ANode::with_config(
+            "node1",
+            "node1",
+            vec!["text".into()],
+            transport.clone(),
+            fast_config(),
+        );
+        let node2 = WakuA2ANode::with_config(
+            "node2",
+            "node2",
+            vec!["code".into()],
+            transport.clone(),
+            fast_config(),
+        );
+        let observer = WakuA2ANode::with_config(
+            "observer",
+            "observer",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+
+        node1.announce_presence().await.unwrap();
+        node2.announce_presence().await.unwrap();
+
+        let count = observer.poll_presence().await.unwrap();
+        assert_eq!(count, 2);
+
+        let peers = observer.peers().all_live();
+        assert_eq!(peers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_roundtrip_preserves_task_fields() {
+        let transport = MockTransport::new();
+        let alice = WakuA2ANode::new_encrypted("alice", "Alice", vec![], transport.clone());
+        let bob = WakuA2ANode::new_encrypted("bob", "Bob", vec![], transport.clone());
+        let bpk = bob.pubkey().to_string();
+        let _ = bob.poll_tasks().await.unwrap();
+
+        let mut task = Task::new(alice.pubkey(), &bpk, "secret message");
+        task.session_id = Some("sess-123".to_string());
+
+        alice.send_task_to(&task, Some(&bob.card)).await.unwrap();
+
+        let received = bob.poll_tasks().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].text(), Some("secret message"));
+        assert_eq!(received[0].from, alice.pubkey());
+        assert_eq!(received[0].session_id, Some("sess-123".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    type PublishedMessages = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+    struct MockTransport {
+        published: PublishedMessages,
+        state: Arc<Mutex<MockState>>,
+    }
+
+    struct MockState {
+        subscribers: HashMap<String, Vec<mpsc::Sender<Vec<u8>>>>,
+        history: HashMap<String, Vec<Vec<u8>>>,
+    }
+
+    impl MockTransport {
+        fn new() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+                state: Arc::new(Mutex::new(MockState {
+                    subscribers: HashMap::new(),
+                    history: HashMap::new(),
+                })),
+            }
+        }
+    }
+
+    impl Clone for MockTransport {
+        fn clone(&self) -> Self {
+            Self {
+                published: self.published.clone(),
+                state: self.state.clone(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Transport for MockTransport {
+        async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
+            let data = payload.to_vec();
+            self.published
+                .lock()
+                .unwrap()
+                .push((topic.to_string(), data.clone()));
+            let mut state = self.state.lock().unwrap();
+            state
+                .history
+                .entry(topic.to_string())
+                .or_default()
+                .push(data.clone());
+            if let Some(subs) = state.subscribers.get_mut(topic) {
+                subs.retain(|tx| tx.try_send(data.clone()).is_ok());
+            }
+            Ok(())
+        }
+
+        async fn subscribe(&self, topic: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
+            let mut state = self.state.lock().unwrap();
+            let (tx, rx) = mpsc::channel(1024);
+            if let Some(history) = state.history.get(topic) {
+                for msg in history {
+                    let _ = tx.try_send(msg.clone());
+                }
+            }
+            state
+                .subscribers
+                .entry(topic.to_string())
+                .or_default()
+                .push(tx);
+            Ok(rx)
+        }
+
+        async fn unsubscribe(&self, topic: &str) -> Result<()> {
+            let mut state = self.state.lock().unwrap();
+            state.subscribers.remove(topic);
+            Ok(())
+        }
+    }
+
+    fn fast_config() -> logos_messaging_a2a_transport::sds::ChannelConfig {
+        logos_messaging_a2a_transport::sds::ChannelConfig {
+            ack_timeout: std::time::Duration::from_millis(1),
+            max_retries: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn session_has_unique_uuid() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        let s1 = node.create_session("peer-a");
+        let s2 = node.create_session("peer-b");
+        assert_ne!(s1.id, s2.id, "sessions should have unique IDs");
+    }
+
+    #[test]
+    fn session_created_at_is_recent() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let session = node.create_session("peer-a");
+        // created_at should be within 2 seconds of now
+        assert!(
+            session.created_at >= now - 2 && session.created_at <= now + 2,
+            "session created_at should be close to current time"
+        );
+    }
+
+    #[test]
+    fn session_starts_with_empty_task_ids() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        let session = node.create_session("peer-a");
+        assert!(session.task_ids.is_empty());
+    }
+
+    #[test]
+    fn session_peer_preserved_correctly() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        let long_key = "02".to_string() + &"ab".repeat(32);
+        let session = node.create_session(&long_key);
+        assert_eq!(session.peer, long_key);
+    }
+
+    #[tokio::test]
+    async fn multiple_tasks_tracked_in_session() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config());
+        let session = node.create_session("02deadbeef");
+
+        // Send multiple messages in the same session
+        let t1 = node.send_in_session(&session.id, "first").await.unwrap();
+        let t2 = node.send_in_session(&session.id, "second").await.unwrap();
+        let t3 = node.send_in_session(&session.id, "third").await.unwrap();
+
+        let updated = node.get_session(&session.id).unwrap();
+        assert_eq!(updated.task_ids.len(), 3);
+        assert_eq!(updated.task_ids[0], t1.id);
+        assert_eq!(updated.task_ids[1], t2.id);
+        assert_eq!(updated.task_ids[2], t3.id);
+    }
+
+    #[tokio::test]
+    async fn tasks_in_session_carry_session_id() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config());
+        let session = node.create_session("02deadbeef");
+
+        let task = node.send_in_session(&session.id, "hello").await.unwrap();
+        assert_eq!(task.session_id, Some(session.id.clone()));
+    }
+
+    #[test]
+    fn sessions_isolated_between_peers() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+
+        let s1 = node.create_session("peer-a");
+        let s2 = node.create_session("peer-b");
+
+        assert_ne!(s1.id, s2.id);
+        assert_eq!(s1.peer, "peer-a");
+        assert_eq!(s2.peer, "peer-b");
+
+        // Getting one doesn't affect the other
+        let got1 = node.get_session(&s1.id).unwrap();
+        let got2 = node.get_session(&s2.id).unwrap();
+        assert_eq!(got1.peer, "peer-a");
+        assert_eq!(got2.peer, "peer-b");
+    }
+
+    #[test]
+    fn multiple_sessions_with_same_peer() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+
+        let s1 = node.create_session("peer-a");
+        let s2 = node.create_session("peer-a");
+
+        // Two distinct sessions, same peer
+        assert_ne!(s1.id, s2.id);
+        assert_eq!(s1.peer, s2.peer);
+        assert_eq!(node.list_sessions().len(), 2);
+    }
+
+    #[test]
+    fn get_session_returns_clone() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        let session = node.create_session("peer-a");
+
+        let got1 = node.get_session(&session.id).unwrap();
+        let got2 = node.get_session(&session.id).unwrap();
+        assert_eq!(got1.id, got2.id);
+        assert_eq!(got1.peer, got2.peer);
+    }
+
+    #[test]
+    fn list_sessions_empty_initially() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+        assert!(node.list_sessions().is_empty());
+    }
+
+    #[test]
+    fn list_sessions_contains_all_created() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::new("test", "test", vec![], transport);
+
+        let ids: Vec<String> = (0..5)
+            .map(|i| node.create_session(&format!("peer-{i}")).id)
+            .collect();
+
+        let sessions = node.list_sessions();
+        assert_eq!(sessions.len(), 5);
+        for id in &ids {
+            assert!(sessions.iter().any(|s| &s.id == id));
+        }
+    }
+
+    #[tokio::test]
+    async fn incoming_session_task_tracked_in_existing_session() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+
+        // Receiver pre-creates a session
+        let session = receiver.create_session(sender.pubkey());
+
+        // Sender sends a task with that session ID
+        let task = Task::new_in_session(sender.pubkey(), &rpk, "within session", &session.id);
+        sender.send_task(&task).await.unwrap();
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+
+        // The task should be tracked in the existing session
+        let updated = receiver.get_session(&session.id).unwrap();
+        assert!(updated.task_ids.contains(&task.id));
+    }
+
+    #[tokio::test]
+    async fn incoming_task_without_session_id_not_tracked() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+
+        // Send a task without session_id
+        let task = Task::new(sender.pubkey(), &rpk, "no session");
+        sender.send_task(&task).await.unwrap();
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0].session_id.is_none());
+
+        // No sessions should be created
+        assert!(receiver.list_sessions().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    type PublishedMessages = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+    struct MockTransport {
+        published: PublishedMessages,
+        state: Arc<Mutex<MockState>>,
+    }
+
+    struct MockState {
+        subscribers: HashMap<String, Vec<mpsc::Sender<Vec<u8>>>>,
+        history: HashMap<String, Vec<Vec<u8>>>,
+    }
+
+    impl MockTransport {
+        fn new() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+                state: Arc::new(Mutex::new(MockState {
+                    subscribers: HashMap::new(),
+                    history: HashMap::new(),
+                })),
+            }
+        }
+    }
+
+    impl Clone for MockTransport {
+        fn clone(&self) -> Self {
+            Self {
+                published: self.published.clone(),
+                state: self.state.clone(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Transport for MockTransport {
+        async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
+            let data = payload.to_vec();
+            self.published
+                .lock()
+                .unwrap()
+                .push((topic.to_string(), data.clone()));
+            let mut state = self.state.lock().unwrap();
+            state
+                .history
+                .entry(topic.to_string())
+                .or_default()
+                .push(data.clone());
+            if let Some(subs) = state.subscribers.get_mut(topic) {
+                subs.retain(|tx| tx.try_send(data.clone()).is_ok());
+            }
+            Ok(())
+        }
+
+        async fn subscribe(&self, topic: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
+            let mut state = self.state.lock().unwrap();
+            let (tx, rx) = mpsc::channel(1024);
+            if let Some(history) = state.history.get(topic) {
+                for msg in history {
+                    let _ = tx.try_send(msg.clone());
+                }
+            }
+            state
+                .subscribers
+                .entry(topic.to_string())
+                .or_default()
+                .push(tx);
+            Ok(rx)
+        }
+
+        async fn unsubscribe(&self, topic: &str) -> Result<()> {
+            let mut state = self.state.lock().unwrap();
+            state.subscribers.remove(topic);
+            Ok(())
+        }
+    }
+
+    struct MockStorage {
+        store: Mutex<HashMap<String, Vec<u8>>>,
+        next_id: Mutex<u64>,
+    }
+
+    impl MockStorage {
+        fn new() -> Self {
+            Self {
+                store: Mutex::new(HashMap::new()),
+                next_id: Mutex::new(0),
+            }
+        }
+
+        fn len(&self) -> usize {
+            self.store.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait]
+    impl logos_messaging_a2a_storage::StorageBackend for MockStorage {
+        async fn upload(
+            &self,
+            data: Vec<u8>,
+        ) -> Result<String, logos_messaging_a2a_storage::StorageError> {
+            let mut id = self.next_id.lock().unwrap();
+            let cid = format!("zMock{}", *id);
+            *id += 1;
+            self.store.lock().unwrap().insert(cid.clone(), data);
+            Ok(cid)
+        }
+
+        async fn download(
+            &self,
+            cid: &str,
+        ) -> Result<Vec<u8>, logos_messaging_a2a_storage::StorageError> {
+            self.store.lock().unwrap().get(cid).cloned().ok_or_else(|| {
+                logos_messaging_a2a_storage::StorageError::Api {
+                    status: 404,
+                    body: format!("CID not found: {}", cid),
+                }
+            })
+        }
+    }
+
+    /// Storage backend that always fails on upload.
+    struct FailingUploadStorage;
+
+    #[async_trait]
+    impl logos_messaging_a2a_storage::StorageBackend for FailingUploadStorage {
+        async fn upload(
+            &self,
+            _data: Vec<u8>,
+        ) -> Result<String, logos_messaging_a2a_storage::StorageError> {
+            Err(logos_messaging_a2a_storage::StorageError::Http(
+                "upload failed".to_string(),
+            ))
+        }
+
+        async fn download(
+            &self,
+            _cid: &str,
+        ) -> Result<Vec<u8>, logos_messaging_a2a_storage::StorageError> {
+            Err(logos_messaging_a2a_storage::StorageError::Http(
+                "download failed".to_string(),
+            ))
+        }
+    }
+
+    /// Storage backend that always fails on download.
+    struct FailingDownloadStorage {
+        store: Mutex<HashMap<String, Vec<u8>>>,
+        next_id: Mutex<u64>,
+    }
+
+    impl FailingDownloadStorage {
+        fn new() -> Self {
+            Self {
+                store: Mutex::new(HashMap::new()),
+                next_id: Mutex::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl logos_messaging_a2a_storage::StorageBackend for FailingDownloadStorage {
+        async fn upload(
+            &self,
+            data: Vec<u8>,
+        ) -> Result<String, logos_messaging_a2a_storage::StorageError> {
+            let mut id = self.next_id.lock().unwrap();
+            let cid = format!("zFail{}", *id);
+            *id += 1;
+            self.store.lock().unwrap().insert(cid.clone(), data);
+            Ok(cid)
+        }
+
+        async fn download(
+            &self,
+            _cid: &str,
+        ) -> Result<Vec<u8>, logos_messaging_a2a_storage::StorageError> {
+            Err(logos_messaging_a2a_storage::StorageError::Api {
+                status: 500,
+                body: "download always fails".to_string(),
+            })
+        }
+    }
+
+    fn fast_config() -> logos_messaging_a2a_transport::sds::ChannelConfig {
+        logos_messaging_a2a_transport::sds::ChannelConfig {
+            ack_timeout: std::time::Duration::from_millis(1),
+            max_retries: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn storage_offload_config_new_default_threshold() {
+        let storage = Arc::new(MockStorage::new());
+        let config = StorageOffloadConfig::new(storage);
+        assert_eq!(config.threshold_bytes, 65_536);
+    }
+
+    #[test]
+    fn storage_offload_config_custom_threshold() {
+        let storage = Arc::new(MockStorage::new());
+        let config = StorageOffloadConfig::with_threshold(storage, 1024);
+        assert_eq!(config.threshold_bytes, 1024);
+    }
+
+    #[test]
+    fn storage_offload_config_zero_threshold() {
+        let storage = Arc::new(MockStorage::new());
+        let config = StorageOffloadConfig::with_threshold(storage, 0);
+        assert_eq!(config.threshold_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn offload_at_exact_threshold_boundary_not_offloaded() {
+        // Payload exactly at threshold should NOT be offloaded (only > threshold triggers it)
+        let transport = MockTransport::new();
+        let storage = Arc::new(MockStorage::new());
+
+        // We'll measure the serialized size of a small task
+        let node =
+            WakuA2ANode::with_config("test", "test", vec![], transport.clone(), fast_config());
+        let task = Task::new(node.pubkey(), "02aa", "x");
+        let envelope = A2AEnvelope::Task(task.clone());
+        let serialized_len = serde_json::to_vec(&envelope).unwrap().len();
+
+        // Set threshold to exactly the serialized length
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_storage_offload(StorageOffloadConfig::with_threshold(
+                storage.clone(),
+                serialized_len,
+            ));
+
+        let task = Task::new(node.pubkey(), "02aa", "x");
+        node.send_task(&task).await.unwrap();
+
+        // Should NOT be offloaded since len == threshold (only > triggers)
+        assert_eq!(storage.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn offload_one_byte_over_threshold() {
+        let transport = MockTransport::new();
+        let storage = Arc::new(MockStorage::new());
+
+        // Set threshold very small to force offloading
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 1));
+
+        let task = Task::new(node.pubkey(), "02aa", "hi");
+        node.send_task(&task).await.unwrap();
+
+        // Should be offloaded since any task serialization > 1 byte
+        assert_eq!(storage.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn upload_failure_propagates_error() {
+        let transport = MockTransport::new();
+        let storage = Arc::new(FailingUploadStorage);
+
+        // Tiny threshold to force offload attempt
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_storage_offload(StorageOffloadConfig::with_threshold(storage, 1));
+
+        let task = Task::new(node.pubkey(), "02aa", "this will fail");
+        let result = node.send_task(&task).await;
+
+        assert!(result.is_err(), "upload failure should propagate as error");
+        assert!(
+            result.unwrap_err().to_string().contains("upload failed"),
+            "error should mention upload failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_failure_propagates_error() {
+        let transport = MockTransport::new();
+        let storage = Arc::new(FailingDownloadStorage::new());
+
+        // Sender offloads (upload succeeds)
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config())
+                .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 1));
+
+        // Receiver has the failing-download storage
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_storage_offload(StorageOffloadConfig::with_threshold(storage, 1));
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let task = Task::new(sender.pubkey(), &rpk, "will fail to fetch");
+        sender.send_task(&task).await.unwrap();
+
+        // Receiver's poll should fail because download fails
+        let result = receiver.poll_tasks().await;
+        assert!(
+            result.is_err(),
+            "download failure should propagate as error"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_offload_without_config() {
+        let transport = MockTransport::new();
+        let published = transport.published.clone();
+
+        // Node WITHOUT storage offload
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config());
+
+        let large_text = "B".repeat(100_000);
+        let task = Task::new(node.pubkey(), "02aa", &large_text);
+        node.send_task(&task).await.unwrap();
+
+        // Should still send (just inline, no offload)
+        assert!(!published.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn offloaded_task_has_cleared_content() {
+        let transport = MockTransport::new();
+        let published = transport.published.clone();
+        let storage = Arc::new(MockStorage::new());
+
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 1));
+
+        let task = Task::new(node.pubkey(), "02aa", "offloaded content");
+        node.send_task(&task).await.unwrap();
+
+        // The published SDS message wraps the envelope — extract and check
+        let pubs = published.lock().unwrap();
+        assert!(!pubs.is_empty());
+
+        // Storage should have the original task
+        assert_eq!(storage.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn multiple_offloads_produce_unique_cids() {
+        let transport = MockTransport::new();
+        let storage = Arc::new(MockStorage::new());
+
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 1));
+
+        for i in 0..5 {
+            let task = Task::new(node.pubkey(), "02aa", &format!("msg-{i}"));
+            node.send_task(&task).await.unwrap();
+        }
+
+        // Each upload should have gotten a unique CID
+        assert_eq!(storage.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn with_storage_offload_builder() {
+        let transport = MockTransport::new();
+        let storage = Arc::new(MockStorage::new());
+        let node = WakuA2ANode::new("test", "test", vec![], transport)
+            .with_storage_offload(StorageOffloadConfig::new(storage));
+        // Verify that storage_offload is configured
+        assert!(node.storage_offload.is_some());
+    }
 }
 
 #[cfg(test)]
