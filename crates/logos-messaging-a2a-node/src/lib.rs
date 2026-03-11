@@ -17,6 +17,7 @@ use logos_messaging_a2a_execution::AgentId;
 use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -194,6 +195,75 @@ impl<T: Transport> WakuA2ANode<T> {
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
             retry_config: None,
         }
+    }
+
+    /// Alias for [`from_key`](Self::from_key) — create a node from an existing signing key.
+    pub fn new_with_key(
+        name: &str,
+        description: &str,
+        capabilities: Vec<String>,
+        transport: T,
+        signing_key: SigningKey,
+    ) -> Self {
+        Self::from_key(name, description, capabilities, transport, signing_key)
+    }
+
+    /// Load a signing key from a file (hex-encoded 32 bytes), or generate and
+    /// save one if the file does not exist. File is created with mode 0600.
+    pub fn from_keyfile(
+        name: &str,
+        description: &str,
+        capabilities: Vec<String>,
+        transport: T,
+        path: &Path,
+    ) -> Result<Self> {
+        let signing_key = if path.exists() {
+            let hex_str = std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read keyfile {}", path.display()))?;
+            let bytes = hex::decode(hex_str.trim())
+                .with_context(|| format!("invalid hex in keyfile {}", path.display()))?;
+            if bytes.len() != 32 {
+                anyhow::bail!(
+                    "keyfile {} contains {} bytes, expected 32",
+                    path.display(),
+                    bytes.len()
+                );
+            }
+            SigningKey::from_bytes(bytes.as_slice().into())
+                .with_context(|| format!("invalid signing key in {}", path.display()))?
+        } else {
+            let key = SigningKey::random(&mut rand_core());
+            let hex_str = hex::encode(key.to_bytes());
+
+            // Write atomically: create file, set perms, write content
+            {
+                use std::io::Write;
+                let mut file = std::fs::File::create(path)
+                    .with_context(|| format!("failed to create keyfile {}", path.display()))?;
+
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                        .with_context(|| {
+                            format!("failed to set permissions on {}", path.display())
+                        })?;
+                }
+
+                file.write_all(hex_str.as_bytes())
+                    .with_context(|| format!("failed to write keyfile {}", path.display()))?;
+            }
+
+            key
+        };
+
+        Ok(Self::from_key(
+            name,
+            description,
+            capabilities,
+            transport,
+            signing_key,
+        ))
     }
 
     /// Create a node with custom SDS channel configuration.
@@ -2944,5 +3014,188 @@ mod stream_tests {
         let node = make_node_with_transport("receiver", transport);
         let chunks = node.poll_stream_chunks(target_task).await.unwrap();
         assert!(chunks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod keyfile_tests {
+    use super::*;
+    use logos_messaging_a2a_transport::memory::InMemoryTransport;
+    use tempfile::TempDir;
+
+    fn make_transport() -> InMemoryTransport {
+        InMemoryTransport::new()
+    }
+
+    #[test]
+    fn new_with_key_creates_node_with_specified_key() {
+        let key = SigningKey::random(&mut rand_core());
+        let expected_pubkey = hex::encode(key.verifying_key().to_encoded_point(true).as_bytes());
+
+        let node = WakuA2ANode::new_with_key(
+            "test",
+            "test agent",
+            vec!["text".into()],
+            make_transport(),
+            key,
+        );
+
+        assert_eq!(node.pubkey(), expected_pubkey);
+        assert_eq!(node.card.name, "test");
+    }
+
+    #[test]
+    fn from_keyfile_creates_file_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent.key");
+
+        assert!(!path.exists());
+
+        let node = WakuA2ANode::from_keyfile(
+            "test",
+            "test agent",
+            vec!["text".into()],
+            make_transport(),
+            &path,
+        )
+        .unwrap();
+
+        assert!(path.exists());
+        // File should contain 64 hex chars (32 bytes)
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.len(), 64);
+        hex::decode(&contents).expect("file should be valid hex");
+
+        // Node should have a valid pubkey
+        assert!(!node.pubkey().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_keyfile_sets_permissions_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent.key");
+
+        WakuA2ANode::from_keyfile("test", "test agent", vec![], make_transport(), &path).unwrap();
+
+        let perms = std::fs::metadata(&path).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn from_keyfile_loads_existing_key_same_pubkey() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent.key");
+
+        let node1 = WakuA2ANode::from_keyfile(
+            "agent-a",
+            "first",
+            vec!["text".into()],
+            make_transport(),
+            &path,
+        )
+        .unwrap();
+        let pubkey1 = node1.pubkey().to_string();
+
+        let node2 = WakuA2ANode::from_keyfile(
+            "agent-b",
+            "second",
+            vec!["code".into()],
+            make_transport(),
+            &path,
+        )
+        .unwrap();
+        let pubkey2 = node2.pubkey().to_string();
+
+        assert_eq!(pubkey1, pubkey2, "reloaded key should produce same pubkey");
+    }
+
+    #[test]
+    fn from_keyfile_roundtrip_restart_same_identity() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent.key");
+
+        // "First run" — generates key
+        let pubkey_first = {
+            let node = WakuA2ANode::from_keyfile(
+                "bot",
+                "my bot",
+                vec!["text".into()],
+                make_transport(),
+                &path,
+            )
+            .unwrap();
+            node.pubkey().to_string()
+        };
+        // node is dropped — simulates process exit
+
+        // "Second run" — loads existing key
+        let pubkey_second = {
+            let node = WakuA2ANode::from_keyfile(
+                "bot",
+                "my bot",
+                vec!["text".into()],
+                make_transport(),
+                &path,
+            )
+            .unwrap();
+            node.pubkey().to_string()
+        };
+
+        assert_eq!(pubkey_first, pubkey_second, "identity must survive restart");
+    }
+
+    #[test]
+    fn from_keyfile_rejects_wrong_length() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bad.key");
+
+        // Write 16 bytes (too short)
+        std::fs::write(&path, "aabbccdd00112233aabbccdd00112233").unwrap();
+
+        match WakuA2ANode::from_keyfile("test", "test", vec![], make_transport(), &path) {
+            Err(e) => assert!(
+                e.to_string().contains("16 bytes, expected 32"),
+                "error should mention length: {}",
+                e
+            ),
+            Ok(_) => panic!("expected error for wrong-length key"),
+        }
+    }
+
+    #[test]
+    fn from_keyfile_rejects_invalid_hex() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bad.key");
+
+        std::fs::write(&path, "not-valid-hex!!").unwrap();
+
+        match WakuA2ANode::from_keyfile("test", "test", vec![], make_transport(), &path) {
+            Err(e) => assert!(
+                e.to_string().contains("invalid hex"),
+                "error should mention hex: {}",
+                e
+            ),
+            Ok(_) => panic!("expected error for invalid hex"),
+        }
+    }
+
+    #[test]
+    fn from_keyfile_with_known_key() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("known.key");
+
+        // Generate a key, write it manually, then load via from_keyfile
+        let key = SigningKey::random(&mut rand_core());
+        let hex_str = hex::encode(key.to_bytes());
+        let expected_pubkey = hex::encode(key.verifying_key().to_encoded_point(true).as_bytes());
+        std::fs::write(&path, &hex_str).unwrap();
+
+        let node =
+            WakuA2ANode::from_keyfile("test", "test", vec![], make_transport(), &path).unwrap();
+
+        assert_eq!(node.pubkey(), expected_pubkey);
     }
 }

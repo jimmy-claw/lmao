@@ -4,6 +4,7 @@ use logos_messaging_a2a_core::Task;
 use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -52,6 +53,10 @@ enum AgentAction {
         /// Enable X25519+ChaCha20-Poly1305 encryption
         #[arg(long)]
         encrypt: bool,
+        /// Path to a persistent identity keyfile (hex-encoded 32-byte signing key).
+        /// If the file does not exist, a new key is generated and saved.
+        #[arg(long)]
+        keyfile: Option<PathBuf>,
     },
     /// Discover agents on the network
     Discover,
@@ -160,12 +165,22 @@ async fn main() -> Result<()> {
                 name,
                 capabilities,
                 encrypt,
+                keyfile,
             } => {
                 let caps: Vec<String> = capabilities
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .collect();
-                let node = if encrypt {
+                let node = if let Some(path) = keyfile {
+                    println!("Using keyfile: {}", path.display());
+                    WakuA2ANode::from_keyfile(
+                        &name,
+                        &format!("{} agent", name),
+                        caps,
+                        transport,
+                        &path,
+                    )?
+                } else if encrypt {
                     WakuA2ANode::new_encrypted(&name, &format!("{} agent", name), caps, transport)
                 } else {
                     WakuA2ANode::new(&name, &format!("{} agent", name), caps, transport)
@@ -749,11 +764,13 @@ mod tests {
                         name,
                         capabilities,
                         encrypt,
+                        keyfile,
                     },
             } => {
                 assert_eq!(name, "echo");
                 assert_eq!(capabilities, "text");
                 assert!(!encrypt);
+                assert!(keyfile.is_none());
             }
             _ => panic!("expected Agent Run"),
         }
@@ -767,6 +784,36 @@ mod tests {
                 action: AgentAction::Run { encrypt, .. },
             } => {
                 assert!(encrypt);
+            }
+            _ => panic!("expected Agent Run"),
+        }
+    }
+
+    #[test]
+    fn agent_run_with_keyfile() {
+        let cli = try_parse(&[
+            "cli",
+            "agent",
+            "run",
+            "--name",
+            "persistent",
+            "--keyfile",
+            "/tmp/agent.key",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Agent {
+                action:
+                    AgentAction::Run {
+                        name,
+                        keyfile,
+                        encrypt,
+                        ..
+                    },
+            } => {
+                assert_eq!(name, "persistent");
+                assert_eq!(keyfile, Some(PathBuf::from("/tmp/agent.key")));
+                assert!(!encrypt);
             }
             _ => panic!("expected Agent Run"),
         }
