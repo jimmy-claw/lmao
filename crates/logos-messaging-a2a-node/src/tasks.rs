@@ -23,7 +23,7 @@ impl<T: Transport> WakuA2ANode<T> {
     /// calls `backend.pay()` before sending and attaches the TX hash to
     /// the task envelope.
     ///
-    /// When a [`RetryConfig`] is set (via [`with_retry`](Self::with_retry)),
+    /// When a [`RetryConfig`](logos_messaging_a2a_core::RetryConfig) is set (via [`with_retry`](Self::with_retry)),
     /// transport-level failures are retried with exponential backoff.
     pub async fn send_task_to(
         &self,

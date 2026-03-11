@@ -1,4 +1,4 @@
-//! Discovery, presence, and registry operations for [`WakuA2ANode`](crate::WakuA2ANode).
+//! Discovery, presence, and registry operations for [`WakuA2ANode`].
 
 use anyhow::{Context, Result};
 use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, PresenceAnnouncement};
