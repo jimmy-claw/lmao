@@ -1,3 +1,15 @@
+//! Transport abstraction layer for Logos Messaging A2A.
+//!
+//! Provides a unified [`Transport`] trait with multiple backend implementations:
+//!
+//! - **REST** (`rest` feature): nwaku REST API transport for communicating with a running nwaku node.
+//! - **Logos Core** (`logos-core` feature): native IPC transport via the Logos Core `delivery_module` plugin.
+//! - **Native Waku** (`native-waku` feature): libwaku FFI transport via the `waku-bindings` crate.
+//! - **In-memory**: zero-dependency mock transport for testing (`memory` module, always available).
+//!
+//! The [`sds`] submodule implements the SDS (Scalable Data Sync) reliability layer on top of
+//! any `Transport`, adding causal ordering, bloom-filter deduplication, and retransmission.
+
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;

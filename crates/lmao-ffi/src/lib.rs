@@ -20,6 +20,9 @@ fn runtime() -> &'static Runtime {
 /// Global node instance (lazy-initialized on first call).
 static NODE: OnceLock<WakuA2ANode<LogosMessagingTransport>> = OnceLock::new();
 
+/// Returns a reference to the lazily-initialized global node, creating it on the
+/// first call using the `WAKU_URL` environment variable (defaults to `http://localhost:8645`).
+/// The node is announced on the Waku network as part of initialization.
 fn get_or_init_node() -> &'static WakuA2ANode<LogosMessagingTransport> {
     NODE.get_or_init(|| {
         let waku_url =
@@ -39,6 +42,8 @@ fn get_or_init_node() -> &'static WakuA2ANode<LogosMessagingTransport> {
     })
 }
 
+/// Converts a C string pointer to a Rust `&str`, returning an error if the
+/// pointer is null or contains invalid UTF-8.
 fn cstr_to_str(ptr: *const c_char) -> Result<&'static str, String> {
     if ptr.is_null() {
         return Err("null pointer".to_string());
@@ -48,12 +53,17 @@ fn cstr_to_str(ptr: *const c_char) -> Result<&'static str, String> {
         .map_err(|e| format!("Invalid UTF-8: {}", e))
 }
 
+/// Converts a Rust `String` into a heap-allocated C string pointer.
+/// Falls back to an empty JSON object `"{}"` if the string contains interior NUL bytes.
+/// The caller is responsible for freeing the returned pointer via [`lmao_free_string`].
 fn to_cstring(s: String) -> *mut c_char {
     CString::new(s)
         .unwrap_or_else(|_| CString::new("{}").unwrap())
         .into_raw()
 }
 
+/// Builds a JSON error response `{"success": false, "error": "<msg>"}` and returns
+/// it as a heap-allocated C string. Double-quotes inside `msg` are escaped.
 fn error_json(msg: &str) -> *mut c_char {
     to_cstring(format!(
         r#"{{"success":false,"error":"{}"}}"#,
@@ -61,6 +71,9 @@ fn error_json(msg: &str) -> *mut c_char {
     ))
 }
 
+/// Builds a JSON success response `{"success": true, ...}` and returns it as a
+/// heap-allocated C string. If `payload` is a JSON object its keys are merged into
+/// the top-level response; otherwise it is wrapped under a `"data"` key.
 fn success_json(payload: serde_json::Value) -> *mut c_char {
     let mut obj = serde_json::Map::new();
     obj.insert("success".to_string(), serde_json::Value::Bool(true));

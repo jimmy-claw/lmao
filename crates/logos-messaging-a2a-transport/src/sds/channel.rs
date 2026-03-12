@@ -132,18 +132,22 @@ impl<T: Transport> MessageChannel<T> {
         }
     }
 
+    /// Return the channel identifier.
     pub fn channel_id(&self) -> &str {
         &self.channel_id
     }
 
+    /// Return this node's participant (sender) identifier.
     pub fn sender_id(&self) -> &str {
         &self.sender_id
     }
 
+    /// Return the current channel configuration.
     pub fn config(&self) -> &ChannelConfig {
         &self.config
     }
 
+    /// Return a reference to the underlying transport.
     pub fn transport(&self) -> &T {
         &self.transport
     }

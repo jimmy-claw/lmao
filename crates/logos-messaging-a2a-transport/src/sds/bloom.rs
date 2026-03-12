@@ -128,6 +128,7 @@ impl SdsBloomFilter {
         *self.item_count.lock().unwrap()
     }
 
+    /// Returns `true` if no items have been added since the last reset.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

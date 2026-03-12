@@ -23,6 +23,7 @@ pub struct RetryLayer<'a, T: Transport> {
 }
 
 impl<'a, T: Transport> RetryLayer<'a, T> {
+    /// Create a new retry layer wrapping the given channel with the specified config.
     pub fn new(channel: &'a MessageChannel<T>, config: &'a RetryConfig) -> Self {
         Self { channel, config }
     }
