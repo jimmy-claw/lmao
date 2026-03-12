@@ -1,3 +1,12 @@
+//! Main A2A node implementation for the Logos Messaging protocol.
+//!
+//! This crate combines crypto ([`logos_messaging_a2a_crypto`]), transport
+//! ([`logos_messaging_a2a_transport`]), storage ([`logos_messaging_a2a_storage`]),
+//! and execution ([`logos_messaging_a2a_execution`]) into a single high-level
+//! [`WakuA2ANode`] that can announce, discover, send/receive tasks, manage
+//! sessions, stream responses, and handle payments over a Waku-compatible
+//! transport layer.
+
 pub mod discovery;
 pub mod payment;
 pub mod presence;
@@ -12,6 +21,7 @@ use k256::ecdsa::SigningKey;
 use logos_messaging_a2a_core::registry::AgentRegistry;
 use logos_messaging_a2a_core::AgentCard;
 use logos_messaging_a2a_core::RetryConfig;
+/// Re-export of [`logos_messaging_a2a_core::Task`] for convenience.
 pub use logos_messaging_a2a_core::Task as TaskType;
 use logos_messaging_a2a_crypto::{AgentIdentity, IntroBundle};
 use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
@@ -21,10 +31,13 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// Re-export of [`session::Session`] for convenient access from crate root.
 pub use session::Session;
 
+/// Re-export of [`storage::StorageOffloadConfig`] for convenient access from crate root.
 pub use storage::StorageOffloadConfig;
 
+/// Re-export of [`payment::PaymentConfig`] for convenient access from crate root.
 pub use payment::PaymentConfig;
 
 /// A2A node: announce, discover, send/receive tasks over Waku.
@@ -32,6 +45,7 @@ pub use payment::PaymentConfig;
 /// Uses SDS MessageChannel for reliable, causally-ordered delivery with
 /// bloom filter deduplication and implicit ACK via remote bloom filters.
 pub struct WakuA2ANode<T: Transport> {
+    /// This agent's public identity card, including name, capabilities, and public key.
     pub card: AgentCard,
     channel: MessageChannel<T>,
     signing_key: SigningKey,

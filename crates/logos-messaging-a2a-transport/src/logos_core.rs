@@ -108,6 +108,7 @@ pub async fn call_plugin_method(
 
 /// State for a persistent event listener (fires multiple times).
 pub struct EventListenerState {
+    /// Channel sender used by the FFI trampoline to forward event payloads into async Rust.
     pub sender: tokio::sync::mpsc::UnboundedSender<String>,
 }
 

@@ -82,9 +82,11 @@ pub trait ExecutionBackend: Send + Sync {
     async fn verify_transfer(&self, tx_hash: &str) -> anyhow::Result<TransferDetails>;
 }
 
+/// Status Network EVM execution backend (gasless, EVM-compatible).
 #[cfg(feature = "status-network")]
 pub mod status_network;
 
+/// LEZ (Logos Execution Zone) ZK-verified execution backend.
 #[cfg(feature = "lez")]
 pub mod lez;
 

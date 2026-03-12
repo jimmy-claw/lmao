@@ -16,7 +16,9 @@ pub type ParticipantId = String;
 /// An entry in the causal history, recording a message and its lamport timestamp.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HistoryEntry {
+    /// The unique identifier of the referenced message.
     pub message_id: MessageId,
+    /// The Lamport timestamp at which the referenced message was created.
     pub lamport_timestamp: u64,
     /// Optional retrieval hint (e.g. store node address) to locate this message.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,6 +38,7 @@ pub enum SdsMessage {
 }
 
 impl SdsMessage {
+    /// Return the unique message identifier, regardless of variant.
     pub fn message_id(&self) -> &str {
         match self {
             SdsMessage::Content(m) => &m.message_id,
@@ -44,6 +47,7 @@ impl SdsMessage {
         }
     }
 
+    /// Return the channel this message belongs to, regardless of variant.
     pub fn channel_id(&self) -> &str {
         match self {
             SdsMessage::Content(m) => &m.channel_id,
@@ -52,6 +56,7 @@ impl SdsMessage {
         }
     }
 
+    /// Return the sender (participant) who created this message, regardless of variant.
     pub fn sender_id(&self) -> &str {
         match self {
             SdsMessage::Content(m) => &m.sender_id,
@@ -60,6 +65,7 @@ impl SdsMessage {
         }
     }
 
+    /// Return the causal history entries attached to this message.
     pub fn causal_history(&self) -> &[HistoryEntry] {
         match self {
             SdsMessage::Content(m) => &m.causal_history,
@@ -68,6 +74,7 @@ impl SdsMessage {
         }
     }
 
+    /// Return the serialized bloom filter bytes, if present.
     pub fn bloom_filter_bytes(&self) -> Option<&[u8]> {
         match self {
             SdsMessage::Content(m) => m.bloom_filter.as_deref(),
@@ -76,6 +83,7 @@ impl SdsMessage {
         }
     }
 
+    /// Return the repair request entries (messages the sender is asking to be re-sent).
     pub fn repair_requests(&self) -> &[HistoryEntry] {
         match self {
             SdsMessage::Content(m) => &m.repair_request,
@@ -88,15 +96,24 @@ impl SdsMessage {
 /// Content message — carries actual payload with causal ordering.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContentMessage {
+    /// Unique identifier for this message (SHA-256 of payload, hex-encoded).
     pub message_id: MessageId,
+    /// The channel this message was sent on.
     pub channel_id: ChannelId,
+    /// The participant who created this message.
     pub sender_id: ParticipantId,
+    /// Lamport timestamp providing causal ordering.
     pub lamport_timestamp: u64,
+    /// Recent message history for causal dependency tracking.
     pub causal_history: Vec<HistoryEntry>,
+    /// Serialized bloom filter for implicit ACK detection by peers.
     pub bloom_filter: Option<Vec<u8>>,
+    /// The application-level payload bytes.
     pub content: Vec<u8>,
+    /// Repair requests asking peers to re-send missing messages.
     #[serde(default)]
     pub repair_request: Vec<HistoryEntry>,
+    /// Optional hint for retrieving this message from a store node.
     #[serde(skip)]
     pub retrieval_hint: Option<Vec<u8>>,
 }
@@ -104,12 +121,19 @@ pub struct ContentMessage {
 /// Sync message — no payload, used for consistency protocol (bloom filter exchange).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SyncMessage {
+    /// Unique identifier for this sync message.
     pub message_id: MessageId,
+    /// The channel this sync message belongs to.
     pub channel_id: ChannelId,
+    /// The participant who sent this sync message.
     pub sender_id: ParticipantId,
+    /// Lamport timestamp for causal ordering of sync rounds.
     pub lamport_timestamp: u64,
+    /// Recent message history for causal dependency tracking.
     pub causal_history: Vec<HistoryEntry>,
+    /// Serialized bloom filter representing all messages seen by the sender.
     pub bloom_filter: Option<Vec<u8>>,
+    /// Repair requests asking peers to re-send missing messages.
     #[serde(default)]
     pub repair_request: Vec<HistoryEntry>,
 }
@@ -117,12 +141,19 @@ pub struct SyncMessage {
 /// Ephemeral message — has payload but no causal ordering (fire-and-forget).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EphemeralMessage {
+    /// Unique identifier for this ephemeral message (SHA-256 of payload, hex-encoded).
     pub message_id: MessageId,
+    /// The channel this ephemeral message was sent on.
     pub channel_id: ChannelId,
+    /// The participant who created this ephemeral message.
     pub sender_id: ParticipantId,
+    /// Causal history snapshot (typically empty for ephemeral messages).
     pub causal_history: Vec<HistoryEntry>,
+    /// Optional serialized bloom filter for consistency protocol.
     pub bloom_filter: Option<Vec<u8>>,
+    /// The application-level payload bytes.
     pub content: Vec<u8>,
+    /// Repair requests asking peers to re-send missing messages.
     #[serde(default)]
     pub repair_request: Vec<HistoryEntry>,
 }

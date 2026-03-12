@@ -15,6 +15,7 @@ use storage_bindings::{
 /// Embeds a full Storage node in-process. The node is started on creation.
 /// Call [`LibstorageBackend::shutdown`] to stop gracefully (consumes self).
 pub struct LibstorageBackend {
+    /// Handle to the embedded Storage node.
     node: Arc<StorageNode>,
     /// Scratch directory for temp files (upload from bytes, download to bytes).
     scratch: PathBuf,
@@ -29,6 +30,10 @@ impl LibstorageBackend {
     }
 
     /// Create with explicit configuration options.
+    ///
+    /// * `data_dir`        — persistent storage directory
+    /// * `discovery_port`  — UDP port for peer discovery (`None` uses the default)
+    /// * `storage_quota`   — maximum bytes the node may store (`None` for unlimited)
     pub async fn with_config(
         data_dir: impl AsRef<Path>,
         discovery_port: Option<u16>,

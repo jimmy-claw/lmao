@@ -43,6 +43,7 @@ struct WakuMessageResponse {
 }
 
 impl LogosMessagingTransport {
+    /// Create a new transport targeting the given nwaku REST endpoint URL.
     pub fn new(waku_url: &str) -> Self {
         Self {
             waku_url: waku_url.trim_end_matches('/').to_string(),

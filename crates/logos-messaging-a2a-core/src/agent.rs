@@ -5,9 +5,14 @@ use serde::{Deserialize, Serialize};
 /// Equivalent to A2A's AgentCard — broadcast on the discovery topic.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentCard {
+    /// Human-readable display name of the agent (e.g. `"echo-agent"`).
     pub name: String,
+    /// Short summary of what this agent does, suitable for UI display.
     pub description: String,
+    /// Semantic version of the agent implementation (e.g. `"0.1.0"`).
     pub version: String,
+    /// Capability tags this agent advertises (e.g. `["summarize", "translate"]`).
+    /// Clients use these to discover agents that support a specific skill.
     pub capabilities: Vec<String>,
     /// secp256k1 compressed public key as hex string — agent identity
     pub public_key: String,

@@ -47,7 +47,12 @@ pub enum StorageError {
     /// HTTP or network-level failure.
     Http(String),
     /// Non-success status code from the storage API.
-    Api { status: u16, body: String },
+    Api {
+        /// HTTP status code returned by the API (e.g. 404, 500).
+        status: u16,
+        /// Response body text describing the error.
+        body: String,
+    },
 }
 
 impl fmt::Display for StorageError {

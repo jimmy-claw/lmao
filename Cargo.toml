@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "A2A protocol over Waku decentralized transport"
 
+[lib]
+doc = false
+
 [workspace]
 resolver = "2"
 members = [

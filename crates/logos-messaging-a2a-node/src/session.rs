@@ -5,9 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A multi-turn conversation session between two agents.
 #[derive(Debug, Clone)]
 pub struct Session {
+    /// Unique session identifier (UUID v4).
     pub id: String,
+    /// Public key of the remote peer in this session.
     pub peer: String,
+    /// Task IDs exchanged within this session, in chronological order.
     pub task_ids: Vec<String>,
+    /// Unix timestamp (seconds) when this session was created.
     pub created_at: u64,
 }
 

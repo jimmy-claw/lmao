@@ -5,11 +5,19 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
+    /// The task has been created and sent but the recipient has not yet
+    /// started processing it.
     Submitted,
+    /// The recipient agent is actively working on the task.
     Working,
+    /// The agent needs additional input from the requester before it can
+    /// continue (e.g. clarification or confirmation).
     InputRequired,
+    /// The agent has finished processing and produced a result.
     Completed,
+    /// The task failed due to an error on the agent side.
     Failed,
+    /// The task was explicitly cancelled by the requester or the agent.
     Cancelled,
 }
 
@@ -17,13 +25,20 @@ pub enum TaskState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Part {
-    Text { text: String },
+    /// A plain-text content part.
+    Text {
+        /// The UTF-8 text content of this part.
+        text: String,
+    },
 }
 
 /// A message within a task (user or agent turn).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
+    /// The role of the message author — typically `"user"` for the requester
+    /// or `"agent"` for the responding agent.
     pub role: String,
+    /// Ordered list of content parts that make up this message.
     pub parts: Vec<Part>,
 }
 
@@ -33,20 +48,32 @@ pub struct Message {
 /// The final chunk has `is_final = true`, signalling the stream is complete.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskStreamChunk {
+    /// Identifier of the task this chunk belongs to.
     pub task_id: String,
+    /// Zero-based sequence number for ordering chunks within a stream.
     pub chunk_index: u32,
+    /// The incremental text payload of this chunk (e.g. one or more LLM tokens).
     pub text: String,
+    /// When `true`, this is the last chunk in the stream and the task
+    /// result is now complete.
     pub is_final: bool,
 }
 
 /// An A2A task: the unit of work exchanged between agents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
+    /// Globally unique task identifier (UUID v4).
     pub id: String,
+    /// Public key (compressed secp256k1 hex) of the agent that created this task.
     pub from: String,
+    /// Public key (compressed secp256k1 hex) of the intended recipient agent.
     pub to: String,
+    /// Current lifecycle state of this task.
     pub state: TaskState,
+    /// The original request message submitted by the sender.
     pub message: Message,
+    /// The agent's response message, populated when the task reaches a
+    /// terminal state such as [`TaskState::Completed`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Message>,
     /// Session ID for multi-turn conversations. Tasks with the same
@@ -66,6 +93,8 @@ pub struct Task {
 }
 
 impl Task {
+    /// Create a new task in the [`TaskState::Submitted`] state with a single
+    /// text part. A random UUID is assigned as the task id.
     pub fn new(from: &str, to: &str, text: &str) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -93,6 +122,9 @@ impl Task {
         task
     }
 
+    /// Build a completed response task that mirrors the original task's id
+    /// and session, swaps `from`/`to`, and attaches the given text as the
+    /// agent's result message.
     pub fn respond(&self, text: &str) -> Self {
         Self {
             id: self.id.clone(),
@@ -113,6 +145,8 @@ impl Task {
         }
     }
 
+    /// Extract the text content of the first part in the request message,
+    /// or `None` if the message has no parts.
     pub fn text(&self) -> Option<&str> {
         self.message
             .parts
@@ -123,6 +157,8 @@ impl Task {
             .next()
     }
 
+    /// Extract the text content of the first part in the result message,
+    /// or `None` if no result has been set yet.
     pub fn result_text(&self) -> Option<&str> {
         self.result.as_ref().and_then(|m| {
             m.parts

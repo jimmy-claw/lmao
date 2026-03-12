@@ -1,3 +1,14 @@
+//! X25519 ECDH key agreement and ChaCha20-Poly1305 authenticated encryption
+//! for agent-to-agent encrypted sessions.
+//!
+//! This crate provides the cryptographic primitives needed to establish and
+//! communicate over encrypted channels between two agents. Each agent generates
+//! an [`AgentIdentity`] (an X25519 keypair), performs Diffie-Hellman key
+//! agreement to derive a shared [`SessionKey`], and then uses that session key
+//! to encrypt and decrypt [`EncryptedPayload`] messages with ChaCha20-Poly1305
+//! AEAD. The [`IntroBundle`] type carries the public key material exchanged
+//! out-of-band to bootstrap a session.
+
 use anyhow::{Context, Result};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng},
@@ -10,6 +21,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 /// Agent identity keypair (X25519 for ECDH key agreement).
 pub struct AgentIdentity {
     secret: StaticSecret,
+    /// The X25519 public key corresponding to this agent's secret key.
     pub public: PublicKey,
 }
 
@@ -106,18 +118,24 @@ impl SessionKey {
 /// Encrypted payload with base64-encoded nonce and ciphertext.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EncryptedPayload {
+    /// Base64-encoded 12-byte nonce used for ChaCha20-Poly1305 encryption.
     pub nonce: String,
+    /// Base64-encoded ciphertext with the appended 16-byte Poly1305 authentication tag.
     pub ciphertext: String,
 }
 
 /// Introduction bundle — shared out-of-band to establish an encrypted session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IntroBundle {
+    /// Hex-encoded X25519 public key used for ECDH key agreement.
     pub agent_pubkey: String,
+    /// Protocol version for the intro bundle format (e.g. `"1.0"`).
     pub version: String,
 }
 
 impl IntroBundle {
+    /// Create a new intro bundle with the given hex-encoded public key and
+    /// the default protocol version `"1.0"`.
     pub fn new(agent_pubkey: &str) -> Self {
         Self {
             agent_pubkey: agent_pubkey.to_string(),

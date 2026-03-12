@@ -1,3 +1,9 @@
+//! Umbrella re-export crate for the Logos Messaging A2A workspace.
+//!
+//! This crate re-exports the public APIs of all sub-crates so downstream
+//! consumers can depend on a single `logos-messaging-a2a` crate instead of
+//! listing each sub-crate individually.
+
 pub use logos_messaging_a2a_core::*;
 pub use logos_messaging_a2a_crypto::{AgentIdentity, EncryptedPayload, IntroBundle, SessionKey};
 pub use logos_messaging_a2a_execution::{AgentId, ExecutionBackend, TransferDetails, TxHash};

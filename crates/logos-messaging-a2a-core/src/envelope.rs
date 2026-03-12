@@ -9,16 +9,28 @@ use crate::task::{Task, TaskStreamChunk};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum A2AEnvelope {
+    /// Agent discovery advertisement — broadcast on the discovery topic so
+    /// peers learn about available agents and their capabilities.
     AgentCard(AgentCard),
+    /// A plaintext task sent from one agent to another.
     Task(Task),
+    /// Delivery acknowledgement for a previously received message.
     Ack {
+        /// Unique identifier of the message being acknowledged.
         message_id: String,
     },
+    /// An end-to-end encrypted task payload, opaque to relay nodes.
     EncryptedTask {
+        /// The encrypted ciphertext and nonce produced by the sender's
+        /// Double Ratchet session.
         encrypted: EncryptedPayload,
+        /// Sender's X25519 public key (hex) so the recipient can look up
+        /// the correct decryption session.
         sender_pubkey: String,
     },
+    /// Ephemeral presence announcement indicating an agent is online.
     Presence(PresenceAnnouncement),
+    /// A streaming chunk carrying incremental task output (e.g. LLM tokens).
     StreamChunk(TaskStreamChunk),
 }
 
