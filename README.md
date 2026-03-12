@@ -1,5 +1,7 @@
 # LMAO — Logos Module for Agent Orchestration
 
+[![codecov](https://codecov.io/gh/jimmy-claw/lmao/branch/master/graph/badge.svg)](https://codecov.io/gh/jimmy-claw/lmao)
+
 > **LMAO** = **L**ogos **M**odule for **A**gent **O**rchestration
 >
 > Yes, the acronym is intentional. Building decentralized AI agent infrastructure is serious work — but it doesn't have to be humourless. LMAO implements Google's [A2A protocol](https://github.com/google/A2A) over [Logos Messaging](https://logos.co/messaging/) decentralized transport, bringing censorship-resistant, serverless agent-to-agent communication to the Logos stack.
