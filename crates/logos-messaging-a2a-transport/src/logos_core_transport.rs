@@ -168,3 +168,48 @@ impl Transport for LogosCoreDeliveryTransport {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn params_json_empty() {
+        assert_eq!(params_json(&[]), "[]");
+    }
+
+    #[test]
+    fn params_json_single_pair() {
+        let result = params_json(&[("cfg", "value1")]);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "cfg");
+        assert_eq!(arr[0]["value"], "value1");
+        assert_eq!(arr[0]["type"], "string");
+    }
+
+    #[test]
+    fn params_json_multiple_pairs() {
+        let result = params_json(&[("contentTopic", "/my/topic"), ("payload", "abc123")]);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["name"], "contentTopic");
+        assert_eq!(arr[0]["value"], "/my/topic");
+        assert_eq!(arr[1]["name"], "payload");
+        assert_eq!(arr[1]["value"], "abc123");
+    }
+
+    #[test]
+    fn params_json_is_valid_json() {
+        let result = params_json(&[("a", "1"), ("b", "2"), ("c", "3")]);
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&result);
+        assert!(parsed.is_ok(), "params_json should produce valid JSON");
+    }
+
+    #[test]
+    fn plugin_constant() {
+        assert_eq!(PLUGIN, "delivery_module");
+    }
+}
