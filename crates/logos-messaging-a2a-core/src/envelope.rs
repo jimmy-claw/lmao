@@ -231,4 +231,150 @@ mod tests {
             panic!("expected EncryptedTask variant");
         }
     }
+
+    #[test]
+    fn test_envelope_missing_type_tag_fails() {
+        let json = r#"{"message_id":"abc"}"#;
+        let result = serde_json::from_str::<A2AEnvelope>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_envelope_task_contains_all_fields() {
+        let task = Task::new("02aa", "03bb", "test");
+        let envelope = A2AEnvelope::Task(task.clone());
+        let json = serde_json::to_string(&envelope).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "task");
+        assert_eq!(v["from"], "02aa");
+        assert_eq!(v["to"], "03bb");
+        assert!(v["id"].is_string());
+        assert_eq!(v["state"], "submitted");
+    }
+
+    #[test]
+    fn test_envelope_ack_type_with_wrong_fields_fails() {
+        // "type":"ack" but missing "message_id"
+        let json = r#"{"type":"ack"}"#;
+        let result = serde_json::from_str::<A2AEnvelope>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_all_envelope_variants_produce_distinct_type_values() {
+        let task = Task::new("a", "b", "t");
+        let variants: Vec<A2AEnvelope> = vec![
+            A2AEnvelope::AgentCard(crate::agent::AgentCard {
+                name: "n".into(),
+                description: "d".into(),
+                version: "0.1.0".into(),
+                capabilities: vec![],
+                public_key: "pk".into(),
+                intro_bundle: None,
+            }),
+            A2AEnvelope::Task(task),
+            A2AEnvelope::Ack {
+                message_id: "m".into(),
+            },
+            A2AEnvelope::EncryptedTask {
+                encrypted: EncryptedPayload {
+                    nonce: "n".into(),
+                    ciphertext: "c".into(),
+                },
+                sender_pubkey: "sp".into(),
+            },
+            A2AEnvelope::Presence(PresenceAnnouncement {
+                agent_id: "id".into(),
+                name: "n".into(),
+                capabilities: vec![],
+                waku_topic: "/t".into(),
+                ttl_secs: 60,
+                signature: None,
+            }),
+            A2AEnvelope::StreamChunk(TaskStreamChunk {
+                task_id: "t".into(),
+                chunk_index: 0,
+                text: "x".into(),
+                is_final: false,
+            }),
+        ];
+        let mut type_tags: Vec<String> = Vec::new();
+        for variant in variants {
+            let json = serde_json::to_string(&variant).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            type_tags.push(v["type"].as_str().unwrap().to_string());
+        }
+        // All type tags should be unique
+        let unique: std::collections::HashSet<&String> = type_tags.iter().collect();
+        assert_eq!(unique.len(), type_tags.len());
+    }
+
+    #[test]
+    fn test_envelope_agent_card_contains_nested_fields() {
+        let card = crate::agent::AgentCard {
+            name: "echo".into(),
+            description: "desc".into(),
+            version: "0.1.0".into(),
+            capabilities: vec!["cap1".into(), "cap2".into()],
+            public_key: "02ab".into(),
+            intro_bundle: None,
+        };
+        let envelope = A2AEnvelope::AgentCard(card);
+        let json = serde_json::to_string(&envelope).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["name"], "echo");
+        assert_eq!(v["capabilities"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_envelope_stream_chunk_final_roundtrip() {
+        let chunk = TaskStreamChunk {
+            task_id: "task-99".into(),
+            chunk_index: 42,
+            text: "final output".into(),
+            is_final: true,
+        };
+        let envelope = A2AEnvelope::StreamChunk(chunk);
+        let json = serde_json::to_string(&envelope).unwrap();
+        let deserialized: A2AEnvelope = serde_json::from_str(&json).unwrap();
+        if let A2AEnvelope::StreamChunk(c) = deserialized {
+            assert!(c.is_final);
+            assert_eq!(c.chunk_index, 42);
+            assert_eq!(c.text, "final output");
+        } else {
+            panic!("expected StreamChunk variant");
+        }
+    }
+
+    #[test]
+    fn test_envelope_presence_with_signature_roundtrip() {
+        let ann = PresenceAnnouncement {
+            agent_id: "02ab".into(),
+            name: "sig".into(),
+            capabilities: vec![],
+            waku_topic: "/t".into(),
+            ttl_secs: 60,
+            signature: Some(vec![0xde, 0xad]),
+        };
+        let envelope = A2AEnvelope::Presence(ann);
+        let json = serde_json::to_string(&envelope).unwrap();
+        let deserialized: A2AEnvelope = serde_json::from_str(&json).unwrap();
+        if let A2AEnvelope::Presence(a) = deserialized {
+            assert_eq!(a.signature, Some(vec![0xde, 0xad]));
+        } else {
+            panic!("expected Presence variant");
+        }
+    }
+
+    #[test]
+    fn test_envelope_rejects_invalid_json() {
+        let result = serde_json::from_str::<A2AEnvelope>("not json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_envelope_rejects_empty_json_object() {
+        let result = serde_json::from_str::<A2AEnvelope>("{}");
+        assert!(result.is_err());
+    }
 }

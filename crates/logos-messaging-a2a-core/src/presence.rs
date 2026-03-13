@@ -378,4 +378,137 @@ mod tests {
         assert!(ann.signature.is_none());
         assert_eq!(ann.name, "test");
     }
+
+    #[test]
+    fn test_resign_after_modification() {
+        let key = make_signing_key();
+        let mut ann = make_signed_announcement(&key);
+        ann.verify().unwrap();
+        // Modify and re-sign
+        ann.name = "modified-agent".to_string();
+        assert!(ann.verify().is_err()); // Old signature invalid
+        ann.sign(&key).unwrap();
+        ann.verify().unwrap(); // New signature valid
+    }
+
+    #[test]
+    fn test_different_keys_produce_different_signatures() {
+        let key1 = make_signing_key();
+        let key2 = make_signing_key();
+        let mut ann1 = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key1),
+            name: "same".to_string(),
+            capabilities: vec!["echo".to_string()],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 300,
+            signature: None,
+        };
+        let mut ann2 = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key2),
+            name: "same".to_string(),
+            capabilities: vec!["echo".to_string()],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 300,
+            signature: None,
+        };
+        ann1.sign(&key1).unwrap();
+        ann2.sign(&key2).unwrap();
+        assert_ne!(ann1.signature, ann2.signature);
+    }
+
+    #[test]
+    fn test_unicode_name_sign_verify() {
+        let key = make_signing_key();
+        let mut ann = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key),
+            name: "日本語エージェント".to_string(),
+            capabilities: vec!["翻訳".to_string()],
+            waku_topic: "/lmao/1/task/unicode/proto".to_string(),
+            ttl_secs: 120,
+            signature: None,
+        };
+        ann.sign(&key).unwrap();
+        ann.verify().unwrap();
+    }
+
+    #[test]
+    fn test_many_capabilities_sign_verify() {
+        let key = make_signing_key();
+        let caps: Vec<String> = (0..50).map(|i| format!("cap-{}", i)).collect();
+        let mut ann = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key),
+            name: "multi".to_string(),
+            capabilities: caps,
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        ann.sign(&key).unwrap();
+        ann.verify().unwrap();
+    }
+
+    #[test]
+    fn test_presence_partial_eq() {
+        let ann1 = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "a".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        let ann2 = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "b".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        assert_ne!(ann1, ann2);
+        let ann3 = ann1.clone();
+        assert_eq!(ann1, ann3);
+    }
+
+    #[test]
+    fn test_presence_rejects_missing_required_fields() {
+        let json = r#"{"agent_id":"02ab","name":"test"}"#;
+        let result = serde_json::from_str::<PresenceAnnouncement>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_presence_extra_fields_ignored() {
+        let json = r#"{"agent_id":"02ab","name":"test","capabilities":[],"waku_topic":"/t","ttl_secs":60,"extra":"ignored"}"#;
+        let ann: PresenceAnnouncement = serde_json::from_str(json).unwrap();
+        assert_eq!(ann.name, "test");
+    }
+
+    #[test]
+    fn test_presence_null_signature_in_json() {
+        let json = r#"{"agent_id":"02ab","name":"test","capabilities":[],"waku_topic":"/t","ttl_secs":60,"signature":null}"#;
+        let ann: PresenceAnnouncement = serde_json::from_str(json).unwrap();
+        assert!(ann.signature.is_none());
+    }
+
+    #[test]
+    fn test_canonical_bytes_same_for_identical_announcements() {
+        let ann1 = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "test".to_string(),
+            capabilities: vec!["a".to_string()],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        let ann2 = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "test".to_string(),
+            capabilities: vec!["a".to_string()],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: Some(vec![1, 2, 3]), // signature should not affect canonical bytes
+        };
+        assert_eq!(ann1.canonical_bytes(), ann2.canonical_bytes());
+    }
 }
