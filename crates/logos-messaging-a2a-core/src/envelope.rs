@@ -102,4 +102,279 @@ mod tests {
         let deserialized: A2AEnvelope = serde_json::from_str(&json).unwrap();
         assert_eq!(envelope, deserialized);
     }
+
+    #[test]
+    fn test_agent_card_envelope_serialization() {
+        let card = crate::agent::AgentCard {
+            name: "echo".to_string(),
+            description: "Echoes".to_string(),
+            version: "0.1.0".to_string(),
+            capabilities: vec!["text".to_string()],
+            public_key: "02abcdef".to_string(),
+            intro_bundle: None,
+        };
+        let envelope = A2AEnvelope::AgentCard(card.clone());
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(json.contains("agent_card"));
+        let deserialized: A2AEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(envelope, deserialized);
+    }
+
+    #[test]
+    fn test_envelope_type_tags_are_snake_case() {
+        let task = Task::new("02aa", "03bb", "test");
+        let cases: Vec<(A2AEnvelope, &str)> = vec![
+            (A2AEnvelope::Task(task), "task"),
+            (
+                A2AEnvelope::Ack {
+                    message_id: "m1".to_string(),
+                },
+                "ack",
+            ),
+            (
+                A2AEnvelope::EncryptedTask {
+                    encrypted: EncryptedPayload {
+                        nonce: "n".to_string(),
+                        ciphertext: "c".to_string(),
+                    },
+                    sender_pubkey: "pk".to_string(),
+                },
+                "encrypted_task",
+            ),
+            (
+                A2AEnvelope::Presence(PresenceAnnouncement {
+                    agent_id: "02ab".to_string(),
+                    name: "a".to_string(),
+                    capabilities: vec![],
+                    waku_topic: "/t".to_string(),
+                    ttl_secs: 60,
+                    signature: None,
+                }),
+                "presence",
+            ),
+            (
+                A2AEnvelope::StreamChunk(TaskStreamChunk {
+                    task_id: "t1".to_string(),
+                    chunk_index: 0,
+                    text: "x".to_string(),
+                    is_final: false,
+                }),
+                "stream_chunk",
+            ),
+        ];
+        for (envelope, expected_tag) in cases {
+            let json = serde_json::to_string(&envelope).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(v["type"].as_str().unwrap(), expected_tag);
+        }
+    }
+
+    #[test]
+    fn test_envelope_invalid_type_tag_fails() {
+        let json = r#"{"type":"nonexistent","data":"x"}"#;
+        let result = serde_json::from_str::<A2AEnvelope>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_envelope_clone_and_debug() {
+        let envelope = A2AEnvelope::Ack {
+            message_id: "msg-1".to_string(),
+        };
+        let cloned = envelope.clone();
+        assert_eq!(envelope, cloned);
+        let debug = format!("{:?}", envelope);
+        assert!(debug.contains("Ack"));
+    }
+
+    #[test]
+    fn test_envelope_partial_eq_different_variants() {
+        let task_env = A2AEnvelope::Task(Task::new("02aa", "03bb", "hi"));
+        let ack_env = A2AEnvelope::Ack {
+            message_id: "m1".to_string(),
+        };
+        assert_ne!(task_env, ack_env);
+    }
+
+    #[test]
+    fn test_ack_envelope_roundtrip_from_json() {
+        let json = r#"{"type":"ack","message_id":"uuid-123-456"}"#;
+        let envelope: A2AEnvelope = serde_json::from_str(json).unwrap();
+        if let A2AEnvelope::Ack { message_id } = &envelope {
+            assert_eq!(message_id, "uuid-123-456");
+        } else {
+            panic!("expected Ack variant");
+        }
+        let reserialized = serde_json::to_string(&envelope).unwrap();
+        let re_deserialized: A2AEnvelope = serde_json::from_str(&reserialized).unwrap();
+        assert_eq!(envelope, re_deserialized);
+    }
+
+    #[test]
+    fn test_encrypted_task_fields_accessible() {
+        let envelope = A2AEnvelope::EncryptedTask {
+            encrypted: EncryptedPayload {
+                nonce: "test_nonce".to_string(),
+                ciphertext: "test_cipher".to_string(),
+            },
+            sender_pubkey: "sender_key".to_string(),
+        };
+        if let A2AEnvelope::EncryptedTask {
+            encrypted,
+            sender_pubkey,
+        } = &envelope
+        {
+            assert_eq!(encrypted.nonce, "test_nonce");
+            assert_eq!(encrypted.ciphertext, "test_cipher");
+            assert_eq!(sender_pubkey, "sender_key");
+        } else {
+            panic!("expected EncryptedTask variant");
+        }
+    }
+
+    #[test]
+    fn test_envelope_missing_type_tag_fails() {
+        let json = r#"{"message_id":"abc"}"#;
+        let result = serde_json::from_str::<A2AEnvelope>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_envelope_task_contains_all_fields() {
+        let task = Task::new("02aa", "03bb", "test");
+        let envelope = A2AEnvelope::Task(task.clone());
+        let json = serde_json::to_string(&envelope).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "task");
+        assert_eq!(v["from"], "02aa");
+        assert_eq!(v["to"], "03bb");
+        assert!(v["id"].is_string());
+        assert_eq!(v["state"], "submitted");
+    }
+
+    #[test]
+    fn test_envelope_ack_type_with_wrong_fields_fails() {
+        // "type":"ack" but missing "message_id"
+        let json = r#"{"type":"ack"}"#;
+        let result = serde_json::from_str::<A2AEnvelope>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_all_envelope_variants_produce_distinct_type_values() {
+        let task = Task::new("a", "b", "t");
+        let variants: Vec<A2AEnvelope> = vec![
+            A2AEnvelope::AgentCard(crate::agent::AgentCard {
+                name: "n".into(),
+                description: "d".into(),
+                version: "0.1.0".into(),
+                capabilities: vec![],
+                public_key: "pk".into(),
+                intro_bundle: None,
+            }),
+            A2AEnvelope::Task(task),
+            A2AEnvelope::Ack {
+                message_id: "m".into(),
+            },
+            A2AEnvelope::EncryptedTask {
+                encrypted: EncryptedPayload {
+                    nonce: "n".into(),
+                    ciphertext: "c".into(),
+                },
+                sender_pubkey: "sp".into(),
+            },
+            A2AEnvelope::Presence(PresenceAnnouncement {
+                agent_id: "id".into(),
+                name: "n".into(),
+                capabilities: vec![],
+                waku_topic: "/t".into(),
+                ttl_secs: 60,
+                signature: None,
+            }),
+            A2AEnvelope::StreamChunk(TaskStreamChunk {
+                task_id: "t".into(),
+                chunk_index: 0,
+                text: "x".into(),
+                is_final: false,
+            }),
+        ];
+        let mut type_tags: Vec<String> = Vec::new();
+        for variant in variants {
+            let json = serde_json::to_string(&variant).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            type_tags.push(v["type"].as_str().unwrap().to_string());
+        }
+        // All type tags should be unique
+        let unique: std::collections::HashSet<&String> = type_tags.iter().collect();
+        assert_eq!(unique.len(), type_tags.len());
+    }
+
+    #[test]
+    fn test_envelope_agent_card_contains_nested_fields() {
+        let card = crate::agent::AgentCard {
+            name: "echo".into(),
+            description: "desc".into(),
+            version: "0.1.0".into(),
+            capabilities: vec!["cap1".into(), "cap2".into()],
+            public_key: "02ab".into(),
+            intro_bundle: None,
+        };
+        let envelope = A2AEnvelope::AgentCard(card);
+        let json = serde_json::to_string(&envelope).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["name"], "echo");
+        assert_eq!(v["capabilities"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_envelope_stream_chunk_final_roundtrip() {
+        let chunk = TaskStreamChunk {
+            task_id: "task-99".into(),
+            chunk_index: 42,
+            text: "final output".into(),
+            is_final: true,
+        };
+        let envelope = A2AEnvelope::StreamChunk(chunk);
+        let json = serde_json::to_string(&envelope).unwrap();
+        let deserialized: A2AEnvelope = serde_json::from_str(&json).unwrap();
+        if let A2AEnvelope::StreamChunk(c) = deserialized {
+            assert!(c.is_final);
+            assert_eq!(c.chunk_index, 42);
+            assert_eq!(c.text, "final output");
+        } else {
+            panic!("expected StreamChunk variant");
+        }
+    }
+
+    #[test]
+    fn test_envelope_presence_with_signature_roundtrip() {
+        let ann = PresenceAnnouncement {
+            agent_id: "02ab".into(),
+            name: "sig".into(),
+            capabilities: vec![],
+            waku_topic: "/t".into(),
+            ttl_secs: 60,
+            signature: Some(vec![0xde, 0xad]),
+        };
+        let envelope = A2AEnvelope::Presence(ann);
+        let json = serde_json::to_string(&envelope).unwrap();
+        let deserialized: A2AEnvelope = serde_json::from_str(&json).unwrap();
+        if let A2AEnvelope::Presence(a) = deserialized {
+            assert_eq!(a.signature, Some(vec![0xde, 0xad]));
+        } else {
+            panic!("expected Presence variant");
+        }
+    }
+
+    #[test]
+    fn test_envelope_rejects_invalid_json() {
+        let result = serde_json::from_str::<A2AEnvelope>("not json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_envelope_rejects_empty_json_object() {
+        let result = serde_json::from_str::<A2AEnvelope>("{}");
+        assert!(result.is_err());
+    }
 }

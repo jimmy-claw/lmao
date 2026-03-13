@@ -221,4 +221,294 @@ mod tests {
         }
         assert!(ann.verify().is_err());
     }
+
+    #[test]
+    fn test_empty_capabilities_sign_verify() {
+        let key = make_signing_key();
+        let mut ann = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key),
+            name: "bare".to_string(),
+            capabilities: vec![],
+            waku_topic: "/test".to_string(),
+            ttl_secs: 10,
+            signature: None,
+        };
+        ann.sign(&key).unwrap();
+        ann.verify().unwrap();
+    }
+
+    #[test]
+    fn test_canonical_bytes_key_order() {
+        let ann = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "test".to_string(),
+            capabilities: vec!["a".to_string()],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        let canonical = String::from_utf8(ann.canonical_bytes()).unwrap();
+        // Keys should be in alphabetical order (serde_json::json! uses sorted keys)
+        let agent_id_pos = canonical.find("agent_id").unwrap();
+        let capabilities_pos = canonical.find("capabilities").unwrap();
+        let name_pos = canonical.find("name").unwrap();
+        let ttl_pos = canonical.find("ttl_secs").unwrap();
+        let waku_pos = canonical.find("waku_topic").unwrap();
+        assert!(agent_id_pos < capabilities_pos);
+        assert!(capabilities_pos < name_pos);
+        assert!(name_pos < ttl_pos);
+        assert!(ttl_pos < waku_pos);
+    }
+
+    #[test]
+    fn test_verify_invalid_hex_agent_id() {
+        let ann = PresenceAnnouncement {
+            agent_id: "not-hex!!".to_string(),
+            name: "bad".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: Some(vec![1, 2, 3]),
+        };
+        let err = ann.verify().unwrap_err();
+        assert!(err.to_string().contains("not valid hex"));
+    }
+
+    #[test]
+    fn test_verify_invalid_pubkey_bytes() {
+        // Valid hex but not a valid secp256k1 compressed pubkey
+        let ann = PresenceAnnouncement {
+            agent_id: "deadbeef".to_string(),
+            name: "bad".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: Some(vec![1, 2, 3]),
+        };
+        let err = ann.verify().unwrap_err();
+        assert!(err.to_string().contains("not a valid secp256k1"));
+    }
+
+    #[test]
+    fn test_ttl_zero() {
+        let key = make_signing_key();
+        let mut ann = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key),
+            name: "ephemeral".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 0,
+            signature: None,
+        };
+        ann.sign(&key).unwrap();
+        ann.verify().unwrap();
+        let json = serde_json::to_string(&ann).unwrap();
+        let deserialized: PresenceAnnouncement = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.ttl_secs, 0);
+    }
+
+    #[test]
+    fn test_ttl_max() {
+        let ann = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "long-lived".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: u64::MAX,
+            signature: None,
+        };
+        let json = serde_json::to_string(&ann).unwrap();
+        let deserialized: PresenceAnnouncement = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.ttl_secs, u64::MAX);
+    }
+
+    #[test]
+    fn test_tampered_ttl_rejected() {
+        let key = make_signing_key();
+        let mut ann = make_signed_announcement(&key);
+        ann.ttl_secs = 999;
+        assert!(ann.verify().is_err());
+    }
+
+    #[test]
+    fn test_tampered_waku_topic_rejected() {
+        let key = make_signing_key();
+        let mut ann = make_signed_announcement(&key);
+        ann.waku_topic = "/evil/topic".to_string();
+        assert!(ann.verify().is_err());
+    }
+
+    #[test]
+    fn test_presence_clone_and_debug() {
+        let ann = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "test".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        let cloned = ann.clone();
+        assert_eq!(ann, cloned);
+        let debug = format!("{:?}", ann);
+        assert!(debug.contains("PresenceAnnouncement"));
+    }
+
+    #[test]
+    fn test_sign_sets_signature() {
+        let key = make_signing_key();
+        let mut ann = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key),
+            name: "test".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        assert!(ann.signature.is_none());
+        ann.sign(&key).unwrap();
+        assert!(ann.signature.is_some());
+        assert!(!ann.signature.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_backward_compat_json_without_signature() {
+        let json = r#"{"agent_id":"02ab","name":"test","capabilities":[],"waku_topic":"/t","ttl_secs":60}"#;
+        let ann: PresenceAnnouncement = serde_json::from_str(json).unwrap();
+        assert!(ann.signature.is_none());
+        assert_eq!(ann.name, "test");
+    }
+
+    #[test]
+    fn test_resign_after_modification() {
+        let key = make_signing_key();
+        let mut ann = make_signed_announcement(&key);
+        ann.verify().unwrap();
+        // Modify and re-sign
+        ann.name = "modified-agent".to_string();
+        assert!(ann.verify().is_err()); // Old signature invalid
+        ann.sign(&key).unwrap();
+        ann.verify().unwrap(); // New signature valid
+    }
+
+    #[test]
+    fn test_different_keys_produce_different_signatures() {
+        let key1 = make_signing_key();
+        let key2 = make_signing_key();
+        let mut ann1 = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key1),
+            name: "same".to_string(),
+            capabilities: vec!["echo".to_string()],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 300,
+            signature: None,
+        };
+        let mut ann2 = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key2),
+            name: "same".to_string(),
+            capabilities: vec!["echo".to_string()],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 300,
+            signature: None,
+        };
+        ann1.sign(&key1).unwrap();
+        ann2.sign(&key2).unwrap();
+        assert_ne!(ann1.signature, ann2.signature);
+    }
+
+    #[test]
+    fn test_unicode_name_sign_verify() {
+        let key = make_signing_key();
+        let mut ann = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key),
+            name: "日本語エージェント".to_string(),
+            capabilities: vec!["翻訳".to_string()],
+            waku_topic: "/lmao/1/task/unicode/proto".to_string(),
+            ttl_secs: 120,
+            signature: None,
+        };
+        ann.sign(&key).unwrap();
+        ann.verify().unwrap();
+    }
+
+    #[test]
+    fn test_many_capabilities_sign_verify() {
+        let key = make_signing_key();
+        let caps: Vec<String> = (0..50).map(|i| format!("cap-{}", i)).collect();
+        let mut ann = PresenceAnnouncement {
+            agent_id: pubkey_hex(&key),
+            name: "multi".to_string(),
+            capabilities: caps,
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        ann.sign(&key).unwrap();
+        ann.verify().unwrap();
+    }
+
+    #[test]
+    fn test_presence_partial_eq() {
+        let ann1 = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "a".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        let ann2 = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "b".to_string(),
+            capabilities: vec![],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        assert_ne!(ann1, ann2);
+        let ann3 = ann1.clone();
+        assert_eq!(ann1, ann3);
+    }
+
+    #[test]
+    fn test_presence_rejects_missing_required_fields() {
+        let json = r#"{"agent_id":"02ab","name":"test"}"#;
+        let result = serde_json::from_str::<PresenceAnnouncement>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_presence_extra_fields_ignored() {
+        let json = r#"{"agent_id":"02ab","name":"test","capabilities":[],"waku_topic":"/t","ttl_secs":60,"extra":"ignored"}"#;
+        let ann: PresenceAnnouncement = serde_json::from_str(json).unwrap();
+        assert_eq!(ann.name, "test");
+    }
+
+    #[test]
+    fn test_presence_null_signature_in_json() {
+        let json = r#"{"agent_id":"02ab","name":"test","capabilities":[],"waku_topic":"/t","ttl_secs":60,"signature":null}"#;
+        let ann: PresenceAnnouncement = serde_json::from_str(json).unwrap();
+        assert!(ann.signature.is_none());
+    }
+
+    #[test]
+    fn test_canonical_bytes_same_for_identical_announcements() {
+        let ann1 = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "test".to_string(),
+            capabilities: vec!["a".to_string()],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: None,
+        };
+        let ann2 = PresenceAnnouncement {
+            agent_id: "02ab".to_string(),
+            name: "test".to_string(),
+            capabilities: vec!["a".to_string()],
+            waku_topic: "/t".to_string(),
+            ttl_secs: 60,
+            signature: Some(vec![1, 2, 3]), // signature should not affect canonical bytes
+        };
+        assert_eq!(ann1.canonical_bytes(), ann2.canonical_bytes());
+    }
 }

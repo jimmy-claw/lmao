@@ -303,4 +303,194 @@ mod tests {
         let agents = reg.agents.read().unwrap();
         assert!(agents.is_empty());
     }
+
+    #[tokio::test]
+    async fn list_empty_registry() {
+        let reg = InMemoryRegistry::new();
+        let all = reg.list().await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_by_capability_empty_registry() {
+        let reg = InMemoryRegistry::new();
+        let results = reg.find_by_capability("anything").await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_does_not_add_duplicate() {
+        let reg = InMemoryRegistry::new();
+        let card = test_card("echo", "aabb", vec!["echo"]);
+        reg.register(card).await.unwrap();
+        let updated = test_card("echo-v2", "aabb", vec!["echo", "v2"]);
+        reg.update(updated).await.unwrap();
+        let all = reg.list().await.unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn register_deregister_reregister() {
+        let reg = InMemoryRegistry::new();
+        let card = test_card("echo", "aabb", vec!["echo"]);
+        reg.register(card.clone()).await.unwrap();
+        reg.deregister("aabb").await.unwrap();
+        // Should be able to register again after deregistering
+        reg.register(card).await.unwrap();
+        let got = reg.get("aabb").await.unwrap();
+        assert_eq!(got.name, "echo");
+    }
+
+    #[test]
+    fn registry_error_is_std_error() {
+        let err: Box<dyn std::error::Error> = Box::new(RegistryError::Backend("test".into()));
+        assert!(err.to_string().contains("test"));
+    }
+
+    #[test]
+    fn registry_error_debug() {
+        let err = RegistryError::NotFound("key123".into());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("NotFound"));
+        assert!(debug.contains("key123"));
+    }
+
+    #[test]
+    fn registry_error_display_messages() {
+        assert_eq!(
+            RegistryError::NotFound("k".into()).to_string(),
+            "agent not found: k"
+        );
+        assert_eq!(
+            RegistryError::Unauthorized("u".into()).to_string(),
+            "unauthorized: u"
+        );
+        assert_eq!(
+            RegistryError::AlreadyRegistered("a".into()).to_string(),
+            "agent already registered: a"
+        );
+        assert_eq!(
+            RegistryError::Backend("b".into()).to_string(),
+            "registry backend error: b"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_by_capability_no_match() {
+        let reg = InMemoryRegistry::new();
+        reg.register(test_card("a", "11", vec!["translate"]))
+            .await
+            .unwrap();
+        let results = reg.find_by_capability("nonexistent").await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_returns_latest_after_update() {
+        let reg = InMemoryRegistry::new();
+        reg.register(test_card("v1", "aabb", vec!["cap1"]))
+            .await
+            .unwrap();
+        reg.update(test_card("v2", "aabb", vec!["cap2"]))
+            .await
+            .unwrap();
+        let got = reg.get("aabb").await.unwrap();
+        assert_eq!(got.name, "v2");
+        assert_eq!(got.capabilities, vec!["cap2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn multiple_agents_with_same_capability() {
+        let reg = InMemoryRegistry::new();
+        for i in 0..5 {
+            reg.register(test_card(
+                &format!("agent-{}", i),
+                &format!("key-{}", i),
+                vec!["shared-cap"],
+            ))
+            .await
+            .unwrap();
+        }
+        let found = reg.find_by_capability("shared-cap").await.unwrap();
+        assert_eq!(found.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn find_by_capability_excludes_empty_caps() {
+        let reg = InMemoryRegistry::new();
+        reg.register(test_card("a", "11", vec![])).await.unwrap();
+        reg.register(test_card("b", "22", vec!["echo"]))
+            .await
+            .unwrap();
+        let found = reg.find_by_capability("echo").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "b");
+    }
+
+    #[tokio::test]
+    async fn deregister_one_of_many() {
+        let reg = InMemoryRegistry::new();
+        reg.register(test_card("a", "11", vec!["x"])).await.unwrap();
+        reg.register(test_card("b", "22", vec!["x"])).await.unwrap();
+        reg.register(test_card("c", "33", vec!["x"])).await.unwrap();
+        reg.deregister("22").await.unwrap();
+        let all = reg.list().await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(reg.get("22").await.is_err());
+        assert!(reg.get("11").await.is_ok());
+        assert!(reg.get("33").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn update_capabilities_reflected_in_find() {
+        let reg = InMemoryRegistry::new();
+        reg.register(test_card("a", "11", vec!["translate"]))
+            .await
+            .unwrap();
+        assert_eq!(reg.find_by_capability("translate").await.unwrap().len(), 1);
+        reg.update(test_card("a-v2", "11", vec!["echo"]))
+            .await
+            .unwrap();
+        assert!(reg
+            .find_by_capability("translate")
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(reg.find_by_capability("echo").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn register_empty_public_key() {
+        let reg = InMemoryRegistry::new();
+        let card = test_card("empty-pk", "", vec!["cap"]);
+        reg.register(card).await.unwrap();
+        let got = reg.get("").await.unwrap();
+        assert_eq!(got.name, "empty-pk");
+    }
+
+    #[tokio::test]
+    async fn multiple_updates_same_agent() {
+        let reg = InMemoryRegistry::new();
+        reg.register(test_card("v1", "aa", vec!["a"]))
+            .await
+            .unwrap();
+        reg.update(test_card("v2", "aa", vec!["b"])).await.unwrap();
+        reg.update(test_card("v3", "aa", vec!["c"])).await.unwrap();
+        let got = reg.get("aa").await.unwrap();
+        assert_eq!(got.name, "v3");
+        assert_eq!(got.capabilities, vec!["c".to_string()]);
+        assert_eq!(reg.list().await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn registry_error_not_found_display() {
+        let err = RegistryError::NotFound("pk123".into());
+        assert_eq!(err.to_string(), "agent not found: pk123");
+    }
+
+    #[test]
+    fn registry_error_already_registered_display() {
+        let err = RegistryError::AlreadyRegistered("pk".into());
+        assert_eq!(err.to_string(), "agent already registered: pk");
+    }
 }

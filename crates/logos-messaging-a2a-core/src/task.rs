@@ -365,4 +365,226 @@ mod tests {
         assert!(chunk.is_final);
         assert_eq!(chunk.chunk_index, 5);
     }
+
+    #[test]
+    fn test_task_empty_text() {
+        let task = Task::new("02aa", "03bb", "");
+        assert_eq!(task.text(), Some(""));
+    }
+
+    #[test]
+    fn test_task_long_text() {
+        let long_text = "x".repeat(10_000);
+        let task = Task::new("02aa", "03bb", &long_text);
+        assert_eq!(task.text(), Some(long_text.as_str()));
+        // Roundtrip through JSON
+        let json = serde_json::to_string(&task).unwrap();
+        let deserialized: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.text(), Some(long_text.as_str()));
+    }
+
+    #[test]
+    fn test_task_full_roundtrip() {
+        let mut task = Task::new("02aa", "03bb", "hello");
+        task.session_id = Some("sess-1".to_string());
+        task.payload_cid = Some("cid-1".to_string());
+        task.payment_tx = Some("tx-1".to_string());
+        task.payment_amount = Some(100);
+        task.result = Some(Message {
+            role: "agent".to_string(),
+            parts: vec![Part::Text {
+                text: "world".to_string(),
+            }],
+        });
+        let json = serde_json::to_string(&task).unwrap();
+        let deserialized: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(task, deserialized);
+    }
+
+    #[test]
+    fn test_task_state_all_variants_roundtrip() {
+        let all_states = vec![
+            TaskState::Submitted,
+            TaskState::Working,
+            TaskState::InputRequired,
+            TaskState::Completed,
+            TaskState::Failed,
+            TaskState::Cancelled,
+        ];
+        for state in all_states {
+            let json = serde_json::to_string(&state).unwrap();
+            let deserialized: TaskState = serde_json::from_str(&json).unwrap();
+            assert_eq!(state, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_task_state_invalid_value() {
+        let result = serde_json::from_str::<TaskState>("\"invalid_state\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_message_empty_parts() {
+        let msg = Message {
+            role: "user".to_string(),
+            parts: vec![],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: Message = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.parts.is_empty());
+    }
+
+    #[test]
+    fn test_text_on_empty_parts() {
+        let task = Task {
+            id: "test".to_string(),
+            from: "a".to_string(),
+            to: "b".to_string(),
+            state: TaskState::Submitted,
+            message: Message {
+                role: "user".to_string(),
+                parts: vec![],
+            },
+            result: None,
+            session_id: None,
+            payload_cid: None,
+            payment_tx: None,
+            payment_amount: None,
+        };
+        assert!(task.text().is_none());
+    }
+
+    #[test]
+    fn test_result_text_with_populated_result() {
+        let mut task = Task::new("a", "b", "hello");
+        task.result = Some(Message {
+            role: "agent".to_string(),
+            parts: vec![Part::Text {
+                text: "response".to_string(),
+            }],
+        });
+        assert_eq!(task.result_text(), Some("response"));
+    }
+
+    #[test]
+    fn test_result_text_empty_parts() {
+        let mut task = Task::new("a", "b", "hello");
+        task.result = Some(Message {
+            role: "agent".to_string(),
+            parts: vec![],
+        });
+        assert!(task.result_text().is_none());
+    }
+
+    #[test]
+    fn test_stream_chunk_empty_text() {
+        let chunk = TaskStreamChunk {
+            task_id: "t1".to_string(),
+            chunk_index: 0,
+            text: "".to_string(),
+            is_final: false,
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        let deserialized: TaskStreamChunk = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.text, "");
+    }
+
+    #[test]
+    fn test_stream_chunk_max_index() {
+        let chunk = TaskStreamChunk {
+            task_id: "t1".to_string(),
+            chunk_index: u32::MAX,
+            text: "last".to_string(),
+            is_final: true,
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        let deserialized: TaskStreamChunk = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.chunk_index, u32::MAX);
+    }
+
+    #[test]
+    fn test_task_clone_and_debug() {
+        let task = Task::new("02aa", "03bb", "test");
+        let cloned = task.clone();
+        assert_eq!(task, cloned);
+        let debug = format!("{:?}", task);
+        assert!(debug.contains("Task"));
+        assert!(debug.contains("02aa"));
+    }
+
+    #[test]
+    fn test_task_state_debug() {
+        assert!(format!("{:?}", TaskState::Submitted).contains("Submitted"));
+        assert!(format!("{:?}", TaskState::Working).contains("Working"));
+        assert!(format!("{:?}", TaskState::InputRequired).contains("InputRequired"));
+        assert!(format!("{:?}", TaskState::Completed).contains("Completed"));
+        assert!(format!("{:?}", TaskState::Failed).contains("Failed"));
+        assert!(format!("{:?}", TaskState::Cancelled).contains("Cancelled"));
+    }
+
+    #[test]
+    fn test_respond_preserves_original_message() {
+        let task = Task::new("02aa", "03bb", "original question");
+        let response = task.respond("the answer");
+        assert_eq!(response.text(), Some("original question"));
+        assert_eq!(response.result_text(), Some("the answer"));
+    }
+
+    #[test]
+    fn test_payment_amount_max() {
+        let mut task = Task::new("a", "b", "expensive");
+        task.payment_amount = Some(u64::MAX);
+        let json = serde_json::to_string(&task).unwrap();
+        let deserialized: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.payment_amount, Some(u64::MAX));
+    }
+
+    #[test]
+    fn test_task_partial_eq() {
+        let t1 = Task::new("a", "b", "hello");
+        let t2 = Task::new("a", "b", "hello");
+        // Different UUIDs, so not equal
+        assert_ne!(t1, t2);
+        // Same task cloned should be equal
+        let t3 = t1.clone();
+        assert_eq!(t1, t3);
+    }
+
+    #[test]
+    fn test_stream_chunk_clone() {
+        let chunk = TaskStreamChunk {
+            task_id: "t1".to_string(),
+            chunk_index: 0,
+            text: "hello".to_string(),
+            is_final: false,
+        };
+        let cloned = chunk.clone();
+        assert_eq!(chunk, cloned);
+    }
+
+    #[test]
+    fn test_part_clone_and_debug() {
+        let part = Part::Text {
+            text: "hello".to_string(),
+        };
+        let cloned = part.clone();
+        assert_eq!(part, cloned);
+        let debug = format!("{:?}", part);
+        assert!(debug.contains("Text"));
+    }
+
+    #[test]
+    fn test_message_clone_and_debug() {
+        let msg = Message {
+            role: "user".to_string(),
+            parts: vec![Part::Text {
+                text: "hi".to_string(),
+            }],
+        };
+        let cloned = msg.clone();
+        assert_eq!(msg, cloned);
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("Message"));
+    }
 }
