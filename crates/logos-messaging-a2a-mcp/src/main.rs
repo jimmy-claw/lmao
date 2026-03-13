@@ -27,6 +27,7 @@ use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use logos_messaging_a2a_core::{AgentCard, Part, TaskState};
+use logos_messaging_a2a_node::presence::PeerInfo;
 use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 use logos_messaging_a2a_transport::Transport;
@@ -38,6 +39,12 @@ struct SendToAgentInput {
     agent_name: String,
     /// The message/task to send to the agent
     message: String,
+}
+
+#[derive(Deserialize, rmcp::schemars::JsonSchema)]
+struct GetAgentStatusInput {
+    /// Agent ID (public key hex) to check presence status for
+    agent_id: String,
 }
 
 #[derive(Debug, Parser)]
@@ -90,9 +97,11 @@ impl<T: Transport> LogosA2ABridge<T> {
         }
     }
 
-    /// Discover all agents currently advertising on the Waku network.
+    /// Discover agents via legacy broadcast discovery (subscribes to the discovery topic and
+    /// drains historical announcements). For real-time presence-based discovery, use
+    /// `discover_agents_presence` instead.
     #[tool(
-        description = "Discover agents on the Logos messaging network. Returns a list of agent names, descriptions, and capabilities. Call this first to see what agents are available."
+        description = "Discover agents via legacy broadcast discovery (drains the discovery topic). Returns agent names, descriptions, and capabilities. For real-time presence-aware discovery with online status, prefer discover_agents_presence instead."
     )]
     async fn discover_agents(&self) -> Result<CallToolResult, McpError> {
         let node = self.node.read().await;
@@ -242,6 +251,98 @@ impl<T: Transport> LogosA2ABridge<T> {
             names.join("\n"),
         )]))
     }
+
+    /// Discover agents via real-time presence broadcasts.
+    ///
+    /// Polls the presence topic for signed announcements and returns all
+    /// agents that are currently online (within their TTL window).
+    #[tool(
+        description = "Discover agents via real-time presence broadcasts. Polls the Waku presence topic for signed announcements and returns agents that are currently online (within their TTL). More reliable than legacy discover_agents for checking who is actually live right now."
+    )]
+    async fn discover_agents_presence(&self) -> Result<CallToolResult, McpError> {
+        let node = self.node.read().await;
+        node.poll_presence().await.map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: format!("Presence poll failed: {e}").into(),
+            data: None,
+        })?;
+
+        let live_peers = node.peers().all_live();
+
+        if live_peers.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No agents currently online via presence. Agents may not have announced presence yet, or their TTL may have expired.",
+            )]));
+        }
+
+        let summary: Vec<String> = live_peers
+            .iter()
+            .enumerate()
+            .map(|(i, (agent_id, info))| format_peer_entry(i + 1, agent_id, info))
+            .collect();
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Found {} live agent(s) via presence:\n\n{}",
+            live_peers.len(),
+            summary.join("\n\n")
+        ))]))
+    }
+
+    /// Check if a specific agent is currently online via presence.
+    #[tool(
+        description = "Check if a specific agent is currently online by its agent ID (public key hex). Polls for fresh presence data and returns the agent's status, capabilities, and TTL info."
+    )]
+    async fn get_agent_status(
+        &self,
+        Parameters(GetAgentStatusInput { agent_id }): Parameters<GetAgentStatusInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let node = self.node.read().await;
+        node.poll_presence().await.map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: format!("Presence poll failed: {e}").into(),
+            data: None,
+        })?;
+
+        match node.peers().get(&agent_id) {
+            Some(info) => {
+                let elapsed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .saturating_sub(info.last_seen);
+
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Agent **{}** is ONLINE\n\
+                     • Agent ID: {}...\n\
+                     • Capabilities: [{}]\n\
+                     • Waku topic: {}\n\
+                     • TTL: {}s (last seen {}s ago)",
+                    info.name,
+                    &agent_id[..16.min(agent_id.len())],
+                    info.capabilities.join(", "),
+                    info.waku_topic,
+                    info.ttl_secs,
+                    elapsed,
+                ))]))
+            }
+            None => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Agent '{agent_id}' is OFFLINE or unknown. The agent may not have announced presence, or its TTL has expired."
+            ))])),
+        }
+    }
+}
+
+/// Format a single peer entry for display.
+fn format_peer_entry(index: usize, agent_id: &str, info: &PeerInfo) -> String {
+    format!(
+        "{}. **{}** — [{}]\n   Agent ID: {}...\n   Topic: {}\n   TTL: {}s",
+        index,
+        info.name,
+        info.capabilities.join(", "),
+        &agent_id[..16.min(agent_id.len())],
+        info.waku_topic,
+        info.ttl_secs,
+    )
 }
 
 impl LogosA2ABridge<LogosMessagingTransport> {
@@ -667,5 +768,308 @@ mod tests {
         assert!(text.contains("1. **"));
         assert!(text.contains("2. **"));
         assert!(text.contains("Capabilities: ["));
+    }
+
+    // ── discover_agents_presence ──
+
+    #[tokio::test]
+    async fn discover_agents_presence_finds_live_peers() {
+        let transport = InMemoryTransport::new();
+
+        // An agent announces presence on the shared transport.
+        let agent = WakuA2ANode::new(
+            "presence-agent",
+            "Agent with presence",
+            vec!["chat".into(), "search".into()],
+            transport.clone(),
+        );
+        agent.announce_presence().await.unwrap();
+
+        let bridge = make_test_bridge(transport);
+        let result = bridge.discover_agents_presence().await.unwrap();
+        let text = result_text(&result);
+
+        assert!(text.contains("Found 1 live agent(s) via presence"));
+        assert!(text.contains("presence-agent"));
+        assert!(text.contains("chat, search"));
+        assert!(text.contains("Agent ID:"));
+        assert!(text.contains("TTL:"));
+    }
+
+    #[tokio::test]
+    async fn discover_agents_presence_no_peers() {
+        let bridge = make_test_bridge(InMemoryTransport::new());
+        let result = bridge.discover_agents_presence().await.unwrap();
+        let text = result_text(&result);
+
+        assert!(text.contains("No agents currently online via presence"));
+    }
+
+    #[tokio::test]
+    async fn discover_agents_presence_multiple_peers() {
+        let transport = InMemoryTransport::new();
+
+        for (name, caps) in [
+            ("agent-alpha", vec!["summarize"]),
+            ("agent-beta", vec!["translate"]),
+            ("agent-gamma", vec!["code", "review"]),
+        ] {
+            let node = WakuA2ANode::new(
+                name,
+                &format!("{name} agent"),
+                caps.into_iter().map(String::from).collect(),
+                transport.clone(),
+            );
+            node.announce_presence().await.unwrap();
+        }
+
+        let bridge = make_test_bridge(transport);
+        let result = bridge.discover_agents_presence().await.unwrap();
+        let text = result_text(&result);
+
+        assert!(text.contains("Found 3 live agent(s) via presence"));
+        assert!(text.contains("agent-alpha"));
+        assert!(text.contains("agent-beta"));
+        assert!(text.contains("agent-gamma"));
+    }
+
+    #[tokio::test]
+    async fn discover_agents_presence_numbered_format() {
+        let transport = InMemoryTransport::new();
+
+        let a = WakuA2ANode::new("first", "A", vec!["a".into()], transport.clone());
+        let b = WakuA2ANode::new("second", "B", vec!["b".into()], transport.clone());
+        a.announce_presence().await.unwrap();
+        b.announce_presence().await.unwrap();
+
+        let bridge = make_test_bridge(transport);
+        let result = bridge.discover_agents_presence().await.unwrap();
+        let text = result_text(&result);
+
+        // Should contain numbered entries with markdown bold.
+        assert!(text.contains("1. **"));
+        assert!(text.contains("2. **"));
+        assert!(text.contains("Topic:"));
+        assert!(text.contains("TTL:"));
+    }
+
+    #[tokio::test]
+    async fn discover_agents_presence_excludes_self() {
+        let transport = InMemoryTransport::new();
+
+        // The bridge node itself announces presence — should be filtered out
+        // by poll_presence's self-exclusion logic.
+        let bridge = make_test_bridge(transport.clone());
+        {
+            let node = bridge.node.read().await;
+            node.announce_presence().await.unwrap();
+        }
+
+        let result = bridge.discover_agents_presence().await.unwrap();
+        let text = result_text(&result);
+        assert!(text.contains("No agents currently online"));
+    }
+
+    #[tokio::test]
+    async fn discover_agents_presence_ignores_unsigned() {
+        use logos_messaging_a2a_core::{topics, A2AEnvelope, PresenceAnnouncement};
+
+        let transport = InMemoryTransport::new();
+
+        // Inject an unsigned presence announcement directly.
+        let unsigned = PresenceAnnouncement {
+            agent_id: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef00"
+                .to_string(),
+            name: "unsigned-agent".to_string(),
+            capabilities: vec!["evil".into()],
+            waku_topic: "/a2a/tasks/fake".to_string(),
+            ttl_secs: 300,
+            signature: None,
+        };
+        let envelope = A2AEnvelope::Presence(unsigned);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(topics::PRESENCE, &payload).await.unwrap();
+
+        let bridge = make_test_bridge(transport);
+        let result = bridge.discover_agents_presence().await.unwrap();
+        let text = result_text(&result);
+
+        // Unsigned announcement should be rejected.
+        assert!(text.contains("No agents currently online"));
+    }
+
+    // ── get_agent_status ──
+
+    #[tokio::test]
+    async fn get_agent_status_online() {
+        let transport = InMemoryTransport::new();
+
+        let agent = WakuA2ANode::new(
+            "status-agent",
+            "Agent for status check",
+            vec!["echo".into()],
+            transport.clone(),
+        );
+        let agent_id = agent.pubkey().to_string();
+        agent.announce_presence().await.unwrap();
+
+        let bridge = make_test_bridge(transport);
+        let result = bridge
+            .get_agent_status(Parameters(GetAgentStatusInput {
+                agent_id: agent_id.clone(),
+            }))
+            .await
+            .unwrap();
+        let text = result_text(&result);
+
+        assert!(text.contains("ONLINE"));
+        assert!(text.contains("status-agent"));
+        assert!(text.contains("echo"));
+        assert!(text.contains("TTL:"));
+        assert!(text.contains("last seen"));
+    }
+
+    #[tokio::test]
+    async fn get_agent_status_offline() {
+        let bridge = make_test_bridge(InMemoryTransport::new());
+        let result = bridge
+            .get_agent_status(Parameters(GetAgentStatusInput {
+                agent_id: "nonexistent_agent_id_0000".to_string(),
+            }))
+            .await
+            .unwrap();
+        let text = result_text(&result);
+
+        assert!(text.contains("OFFLINE or unknown"));
+        assert!(text.contains("nonexistent_agent_id_0000"));
+    }
+
+    #[tokio::test]
+    async fn get_agent_status_shows_capabilities() {
+        let transport = InMemoryTransport::new();
+
+        let agent = WakuA2ANode::new(
+            "multi-cap",
+            "Multi-capability agent",
+            vec!["search".into(), "summarize".into(), "translate".into()],
+            transport.clone(),
+        );
+        let agent_id = agent.pubkey().to_string();
+        agent.announce_presence().await.unwrap();
+
+        let bridge = make_test_bridge(transport);
+        let result = bridge
+            .get_agent_status(Parameters(GetAgentStatusInput {
+                agent_id: agent_id.clone(),
+            }))
+            .await
+            .unwrap();
+        let text = result_text(&result);
+
+        assert!(text.contains("search, summarize, translate"));
+    }
+
+    #[tokio::test]
+    async fn get_agent_status_shows_truncated_agent_id() {
+        let transport = InMemoryTransport::new();
+
+        let agent = WakuA2ANode::new(
+            "truncated-id",
+            "Agent",
+            vec!["test".into()],
+            transport.clone(),
+        );
+        let agent_id = agent.pubkey().to_string();
+        agent.announce_presence().await.unwrap();
+
+        let bridge = make_test_bridge(transport);
+        let result = bridge
+            .get_agent_status(Parameters(GetAgentStatusInput {
+                agent_id: agent_id.clone(),
+            }))
+            .await
+            .unwrap();
+        let text = result_text(&result);
+
+        // Agent ID should be truncated with "..."
+        assert!(text.contains("..."));
+        assert!(text.contains(&agent_id[..16]));
+    }
+
+    // ── GetAgentStatusInput deserialization ──
+
+    #[test]
+    fn get_agent_status_input_deserializes() {
+        let json = r#"{"agent_id": "deadbeef01234567"}"#;
+        let input: GetAgentStatusInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.agent_id, "deadbeef01234567");
+    }
+
+    #[test]
+    fn get_agent_status_input_rejects_missing_field() {
+        let json = r#"{}"#;
+        assert!(serde_json::from_str::<GetAgentStatusInput>(json).is_err());
+    }
+
+    #[test]
+    fn get_agent_status_input_accepts_extra_fields() {
+        let json = r#"{"agent_id": "abc123", "extra": "ignored"}"#;
+        let input: GetAgentStatusInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.agent_id, "abc123");
+    }
+
+    // ── format_peer_entry ──
+
+    #[test]
+    fn format_peer_entry_output() {
+        use logos_messaging_a2a_node::presence::PeerInfo;
+
+        let info = PeerInfo {
+            name: "test-peer".to_string(),
+            capabilities: vec!["echo".to_string(), "search".to_string()],
+            waku_topic: "/a2a/tasks/abcdef".to_string(),
+            ttl_secs: 300,
+            last_seen: 1_700_000_000,
+        };
+
+        let output = format_peer_entry(1, "abcdef1234567890abcdef", &info);
+        assert!(output.contains("1. **test-peer**"));
+        assert!(output.contains("echo, search"));
+        assert!(output.contains("Agent ID: abcdef1234567890..."));
+        assert!(output.contains("Topic: /a2a/tasks/abcdef"));
+        assert!(output.contains("TTL: 300s"));
+    }
+
+    #[test]
+    fn format_peer_entry_short_agent_id() {
+        use logos_messaging_a2a_node::presence::PeerInfo;
+
+        let info = PeerInfo {
+            name: "short-id".to_string(),
+            capabilities: vec![],
+            waku_topic: "/a2a/tasks/short".to_string(),
+            ttl_secs: 60,
+            last_seen: 0,
+        };
+
+        // Agent ID shorter than 16 chars should not panic.
+        let output = format_peer_entry(1, "abc", &info);
+        assert!(output.contains("abc..."));
+    }
+
+    // ── discover_agents description says legacy ──
+
+    #[tokio::test]
+    async fn discover_agents_description_mentions_legacy() {
+        let bridge = make_test_bridge(InMemoryTransport::new());
+
+        // Tool list should be available through the tool router.
+        let tools = bridge.tool_router.list_all();
+        let discover = tools.iter().find(|t| t.name == "discover_agents").unwrap();
+        let desc = discover.description.as_deref().unwrap_or("");
+        assert!(
+            desc.contains("legacy"),
+            "discover_agents description should mention 'legacy': {desc}"
+        );
     }
 }
