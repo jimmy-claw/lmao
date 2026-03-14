@@ -285,4 +285,158 @@ mod tests {
 
         assert_eq!(rx_b.recv().await.unwrap(), b"still alive");
     }
+
+    #[tokio::test]
+    async fn test_concurrent_publish_from_cloned_transports() {
+        let transport = InMemoryTransport::new();
+        let mut rx = transport.subscribe("topic").await.unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0u32..10 {
+            let t = transport.clone();
+            handles.push(tokio::spawn(async move {
+                t.publish("topic", &i.to_le_bytes()).await.unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let mut received = Vec::new();
+        for _ in 0..10 {
+            received.push(rx.recv().await.unwrap());
+        }
+        // All 10 messages arrived (order may vary due to concurrency)
+        assert_eq!(received.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_subscribe_and_publish() {
+        let transport = InMemoryTransport::new();
+
+        // Spawn concurrent subscribers
+        let mut sub_handles = Vec::new();
+        for _ in 0..5 {
+            let t = transport.clone();
+            sub_handles.push(tokio::spawn(
+                async move { t.subscribe("race").await.unwrap() },
+            ));
+        }
+        let mut receivers: Vec<_> = Vec::new();
+        for h in sub_handles {
+            receivers.push(h.await.unwrap());
+        }
+
+        transport.publish("race", b"go").await.unwrap();
+
+        // All concurrent subscribers should receive the message
+        for rx in &mut receivers {
+            assert_eq!(rx.recv().await.unwrap(), b"go");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_large_payload() {
+        let transport = InMemoryTransport::new();
+        let mut rx = transport.subscribe("big").await.unwrap();
+
+        let payload = vec![0xABu8; 1024 * 1024]; // 1 MiB
+        transport.publish("big", &payload).await.unwrap();
+
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg.len(), 1024 * 1024);
+        assert!(msg.iter().all(|&b| b == 0xAB));
+    }
+
+    #[tokio::test]
+    async fn test_binary_payload_roundtrip() {
+        let transport = InMemoryTransport::new();
+        let mut rx = transport.subscribe("bin").await.unwrap();
+
+        // All possible byte values
+        let payload: Vec<u8> = (0..=255).collect();
+        transport.publish("bin", &payload).await.unwrap();
+
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg, payload);
+    }
+
+    #[tokio::test]
+    async fn test_special_topic_names() {
+        let transport = InMemoryTransport::new();
+
+        for topic in &[
+            "",
+            "/waku/2/default/proto",
+            "topic with spaces",
+            "日本語トピック",
+            "a".repeat(1000).as_str(),
+        ] {
+            let mut rx = transport.subscribe(topic).await.unwrap();
+            transport.publish(topic, b"ok").await.unwrap();
+            assert_eq!(rx.recv().await.unwrap(), b"ok");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_multiple_times_same_topic() {
+        let transport = InMemoryTransport::new();
+        let mut rx1 = transport.subscribe("dup").await.unwrap();
+        let mut rx2 = transport.subscribe("dup").await.unwrap();
+        let mut rx3 = transport.subscribe("dup").await.unwrap();
+
+        transport.publish("dup", b"fanout").await.unwrap();
+
+        assert_eq!(rx1.recv().await.unwrap(), b"fanout");
+        assert_eq!(rx2.recv().await.unwrap(), b"fanout");
+        assert_eq!(rx3.recv().await.unwrap(), b"fanout");
+    }
+
+    #[tokio::test]
+    async fn test_history_order_preserved() {
+        let transport = InMemoryTransport::new();
+        for i in 0u32..50 {
+            transport
+                .publish("ordered", &i.to_le_bytes())
+                .await
+                .unwrap();
+        }
+
+        let mut rx = transport.subscribe("ordered").await.unwrap();
+        for i in 0u32..50 {
+            let msg = rx.recv().await.unwrap();
+            assert_eq!(
+                msg,
+                i.to_le_bytes(),
+                "history replay order violated at index {}",
+                i
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_does_not_clear_history() {
+        let transport = InMemoryTransport::new();
+        transport.publish("persist", b"before").await.unwrap();
+        let _rx = transport.subscribe("persist").await.unwrap();
+        transport.unsubscribe("persist").await.unwrap();
+
+        // History should still be available for new subscribers
+        let mut rx2 = transport.subscribe("persist").await.unwrap();
+        assert_eq!(rx2.recv().await.unwrap(), b"before");
+    }
+
+    #[tokio::test]
+    async fn test_dropped_receiver_does_not_affect_other_subscribers() {
+        let transport = InMemoryTransport::new();
+        let rx1 = transport.subscribe("drop-test").await.unwrap();
+        let mut rx2 = transport.subscribe("drop-test").await.unwrap();
+
+        // Drop first subscriber
+        drop(rx1);
+
+        // Second subscriber should still work
+        transport.publish("drop-test", b"survivor").await.unwrap();
+        assert_eq!(rx2.recv().await.unwrap(), b"survivor");
+    }
 }

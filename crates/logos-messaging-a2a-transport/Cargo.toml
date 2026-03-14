@@ -24,5 +24,10 @@ base64 = { version = "0.22", optional = true }
 tracing = { workspace = true }
 waku-bindings = { git = "https://github.com/jimmy-claw/logos-delivery-rust-bindings", branch = "jimmy/rln-optional", default-features = false, optional = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+serde_json = { workspace = true }
+
 [build-dependencies]
 cc = "1"

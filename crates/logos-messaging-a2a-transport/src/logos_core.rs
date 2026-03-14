@@ -128,7 +128,7 @@ extern "C" fn event_trampoline(_result: c_int, message: *const c_char, user_data
 /// Register a persistent event listener on a Logos Core plugin.
 ///
 /// Returns an `UnboundedReceiver<String>` that yields each event payload as JSON.
-/// The returned `Box` must be kept alive for the listener to remain active.
+/// The returned `Box<EventListenerState>` must be kept alive for the listener to remain active.
 pub fn register_event_listener(
     plugin: &str,
     event: &str,
@@ -153,4 +153,200 @@ pub fn register_event_listener(
     }
 
     (rx, state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    fn noop_waker() -> Waker {
+        fn noop(_: *const ()) {}
+        fn clone(p: *const ()) -> RawWaker {
+            RawWaker::new(p, &VTABLE)
+        }
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+        unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+    }
+
+    #[test]
+    fn call_future_pending_then_ready_ok() {
+        let state = Arc::new(Mutex::new(CallState {
+            result: None,
+            waker: None,
+        }));
+
+        let mut future = CallFuture {
+            state: Arc::clone(&state),
+        };
+
+        // First poll should be Pending
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let poll = Pin::new(&mut future).poll(&mut cx);
+        assert!(matches!(poll, Poll::Pending));
+
+        // Waker should be stored
+        assert!(state.lock().unwrap().waker.is_some());
+
+        // Simulate callback completing with success
+        {
+            let mut guard = state.lock().unwrap();
+            guard.result = Some(Ok("success".to_string()));
+            if let Some(w) = guard.waker.take() {
+                w.wake();
+            }
+        }
+
+        // Next poll should be Ready with Ok
+        let poll = Pin::new(&mut future).poll(&mut cx);
+        assert!(matches!(poll, Poll::Ready(Ok(ref s)) if s == "success"));
+    }
+
+    #[test]
+    fn call_future_pending_then_ready_err() {
+        let state = Arc::new(Mutex::new(CallState {
+            result: None,
+            waker: None,
+        }));
+
+        let mut future = CallFuture {
+            state: Arc::clone(&state),
+        };
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let poll = Pin::new(&mut future).poll(&mut cx);
+        assert!(matches!(poll, Poll::Pending));
+
+        // Simulate callback completing with error
+        {
+            let mut guard = state.lock().unwrap();
+            guard.result = Some(Err("something failed".to_string()));
+        }
+
+        let poll = Pin::new(&mut future).poll(&mut cx);
+        assert!(matches!(poll, Poll::Ready(Err(ref s)) if s == "something failed"));
+    }
+
+    #[test]
+    fn call_future_immediately_ready() {
+        let state = Arc::new(Mutex::new(CallState {
+            result: Some(Ok("immediate".to_string())),
+            waker: None,
+        }));
+
+        let mut future = CallFuture {
+            state: Arc::clone(&state),
+        };
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let poll = Pin::new(&mut future).poll(&mut cx);
+        assert!(matches!(poll, Poll::Ready(Ok(ref s)) if s == "immediate"));
+    }
+
+    #[test]
+    fn call_trampoline_success() {
+        let state = Arc::new(Mutex::new(CallState {
+            result: None,
+            waker: None,
+        }));
+
+        // Convert to raw pointer (simulates what call_plugin_method does)
+        let state_ptr = Arc::into_raw(Arc::clone(&state)) as *mut c_void;
+
+        let msg = CString::new("ok").unwrap();
+        call_trampoline(1, msg.as_ptr(), state_ptr);
+
+        let guard = state.lock().unwrap();
+        assert!(matches!(&guard.result, Some(Ok(s)) if s == "ok"));
+    }
+
+    #[test]
+    fn call_trampoline_failure() {
+        let state = Arc::new(Mutex::new(CallState {
+            result: None,
+            waker: None,
+        }));
+
+        let state_ptr = Arc::into_raw(Arc::clone(&state)) as *mut c_void;
+
+        let msg = CString::new("err msg").unwrap();
+        call_trampoline(0, msg.as_ptr(), state_ptr);
+
+        let guard = state.lock().unwrap();
+        assert!(matches!(&guard.result, Some(Err(s)) if s == "err msg"));
+    }
+
+    #[test]
+    fn call_trampoline_null_message() {
+        let state = Arc::new(Mutex::new(CallState {
+            result: None,
+            waker: None,
+        }));
+
+        let state_ptr = Arc::into_raw(Arc::clone(&state)) as *mut c_void;
+
+        call_trampoline(1, std::ptr::null(), state_ptr);
+
+        let guard = state.lock().unwrap();
+        assert!(matches!(&guard.result, Some(Ok(s)) if s.is_empty()));
+    }
+
+    #[test]
+    fn call_trampoline_wakes_waker() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static WOKEN: AtomicBool = AtomicBool::new(false);
+
+        fn wake(_: *const ()) {
+            WOKEN.store(true, Ordering::SeqCst);
+        }
+        fn clone_fn(p: *const ()) -> RawWaker {
+            RawWaker::new(p, &VTABLE)
+        }
+        fn noop(_: *const ()) {}
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, wake, wake, noop);
+
+        WOKEN.store(false, Ordering::SeqCst);
+
+        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+        let state = Arc::new(Mutex::new(CallState {
+            result: None,
+            waker: Some(waker),
+        }));
+
+        let state_ptr = Arc::into_raw(Arc::clone(&state)) as *mut c_void;
+        let msg = CString::new("done").unwrap();
+        call_trampoline(1, msg.as_ptr(), state_ptr);
+
+        assert!(WOKEN.load(Ordering::SeqCst), "waker should have been woken");
+    }
+
+    #[test]
+    fn event_listener_state_sends_messages() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = EventListenerState { sender: tx };
+
+        // Simulate event_trampoline behavior
+        let msg = CString::new("event payload").unwrap();
+        let state_ptr = &state as *const EventListenerState as *mut c_void;
+        event_trampoline(0, msg.as_ptr(), state_ptr);
+
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received, "event payload");
+    }
+
+    #[test]
+    fn event_trampoline_null_message_sends_empty() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = EventListenerState { sender: tx };
+
+        let state_ptr = &state as *const EventListenerState as *mut c_void;
+        event_trampoline(0, std::ptr::null(), state_ptr);
+
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received, "");
+    }
 }
