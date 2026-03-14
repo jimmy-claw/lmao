@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "MCP server bridge — expose Logos Messaging A2A agents as MCP tools"
 
+[lib]
+name = "logos_messaging_a2a_mcp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "logos-messaging-a2a-mcp"
 path = "src/main.rs"
