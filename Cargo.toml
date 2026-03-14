@@ -67,3 +67,7 @@ path = "examples/ping_pong.rs"
 [[example]]
 name = "two_agents"
 path = "examples/two_agents.rs"
+
+[[example]]
+name = "presence_discovery"
+path = "examples/presence_discovery.rs"
