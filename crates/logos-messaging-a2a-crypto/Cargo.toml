@@ -12,3 +12,11 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 anyhow = { workspace = true }
 base64 = "0.22"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
+
+[[bench]]
+name = "crypto"
+harness = false
