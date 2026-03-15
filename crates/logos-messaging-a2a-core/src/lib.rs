@@ -8,6 +8,7 @@
 //! # Modules
 //!
 //! - [`agent`] — Agent identity and capability advertisement ([`AgentCard`]).
+//! - [`delegation`] — Multi-agent task delegation types ([`DelegationRequest`], [`DelegationResult`], [`DelegationStrategy`]).
 //! - [`envelope`] — Wire envelope ([`A2AEnvelope`]) for all Waku messages.
 //! - [`task`] — Task lifecycle types ([`Task`], [`TaskState`], [`Message`], [`Part`]).
 //! - [`topics`] — Waku content topic string helpers.
@@ -16,6 +17,7 @@
 //! - [`retry`] — Exponential-backoff retry configuration.
 
 pub mod agent;
+pub mod delegation;
 pub mod envelope;
 pub mod presence;
 pub mod registry;
@@ -25,6 +27,7 @@ pub mod topics;
 
 // Re-export everything at crate root so existing imports don't break.
 pub use agent::*;
+pub use delegation::*;
 pub use envelope::*;
 pub use presence::*;
 pub use retry::*;
