@@ -6,6 +6,7 @@ use logos_messaging_a2a_core::{
     topics, A2AEnvelope, DelegationRequest, DelegationResult, DelegationStrategy, Task,
 };
 use logos_messaging_a2a_transport::Transport;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::WakuA2ANode;
@@ -55,6 +56,19 @@ impl<T: Transport> WakuA2ANode<T> {
                     .next()
                     .context("no live peers available for broadcast delegation")?
             }
+            DelegationStrategy::RoundRobin => {
+                let peers: Vec<String> = self
+                    .peers()
+                    .all_live()
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect();
+                if peers.is_empty() {
+                    anyhow::bail!("no live peers available for round-robin delegation");
+                }
+                let idx = self.round_robin_counter.fetch_add(1, Ordering::Relaxed) % peers.len();
+                peers.into_iter().nth(idx).unwrap()
+            }
         };
 
         self.delegate_to_peer(request, &peer_id, timeout_secs).await
@@ -80,6 +94,7 @@ impl<T: Transport> WakuA2ANode<T> {
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect(),
+            // RoundRobin, BroadcastCollect, FirstAvailable all broadcast to every peer
             _ => self
                 .peers()
                 .all_live()

@@ -29,6 +29,7 @@ use logos_messaging_a2a_transport::sds::{ChannelConfig, MessageChannel};
 use logos_messaging_a2a_transport::Transport;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -74,6 +75,8 @@ pub struct WakuA2ANode<T: Transport> {
     /// Optional retry configuration for exponential-backoff retries of
     /// transport send failures.
     retry_config: Option<RetryConfig>,
+    /// Atomic counter for round-robin delegation peer selection.
+    round_robin_counter: AtomicUsize,
 }
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -115,6 +118,7 @@ impl<T: Transport> WakuA2ANode<T> {
             registry: None,
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
             retry_config: None,
+            round_robin_counter: AtomicUsize::new(0),
         }
     }
 
@@ -164,6 +168,7 @@ impl<T: Transport> WakuA2ANode<T> {
             registry: None,
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
             retry_config: None,
+            round_robin_counter: AtomicUsize::new(0),
         }
     }
 
@@ -210,6 +215,7 @@ impl<T: Transport> WakuA2ANode<T> {
             registry: None,
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
             retry_config: None,
+            round_robin_counter: AtomicUsize::new(0),
         }
     }
 
@@ -327,6 +333,7 @@ impl<T: Transport> WakuA2ANode<T> {
             registry: None,
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
             retry_config: None,
+            round_robin_counter: AtomicUsize::new(0),
         }
     }
 
@@ -391,6 +398,11 @@ impl<T: Transport> WakuA2ANode<T> {
     /// Get the current retry configuration, if any.
     pub fn retry_config(&self) -> Option<&RetryConfig> {
         self.retry_config.as_ref()
+    }
+
+    /// Get a reference to the round-robin counter (for delegation).
+    pub fn round_robin_counter(&self) -> &AtomicUsize {
+        &self.round_robin_counter
     }
 
     /// Create a new conversation session with a peer.
