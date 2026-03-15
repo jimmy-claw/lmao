@@ -132,7 +132,8 @@ impl<T: Transport> WakuA2ANode<T> {
 mod tests {
     use crate::payment::PaymentConfig;
     use crate::tasks::test_support::{
-        fast_config, FailingVerifyBackend, MockExecutionBackend, MockTransport, VerifyingBackend,
+        fast_config, FailingPayBackend, FailingVerifyBackend, MockExecutionBackend, MockTransport,
+        VerifyingBackend,
     };
     use crate::WakuA2ANode;
     use logos_messaging_a2a_core::Task;
@@ -739,5 +740,271 @@ mod tests {
         assert_eq!(pay.auto_pay_amount, 10);
         assert!(pay.verify_on_chain);
         assert_eq!(pay.receiving_account, "0xabc");
+    }
+
+    // ── Direct unit tests for verify_payment ──────────────────────────
+
+    #[tokio::test]
+    async fn test_verify_payment_direct_no_config() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config());
+
+        let task = Task::new("02sender", node.pubkey(), "no config");
+        assert!(node.verify_payment(&task).await);
+    }
+
+    #[tokio::test]
+    async fn test_verify_payment_direct_zero_required() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 0,
+                auto_pay: false,
+                auto_pay_amount: 0,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let task = Task::new("02sender", node.pubkey(), "free");
+        assert!(node.verify_payment(&task).await);
+    }
+
+    #[tokio::test]
+    async fn test_verify_payment_offline_exact_boundary() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 100,
+                auto_pay: false,
+                auto_pay_amount: 0,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let mut task = Task::new("02sender", node.pubkey(), "exact boundary");
+        task.payment_tx = Some("0xexact".to_string());
+        task.payment_amount = Some(100); // exactly equals required
+
+        assert!(
+            node.verify_payment(&task).await,
+            "payment_amount == required_amount should be accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_payment_offline_insufficient_some_amount() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 100,
+                auto_pay: false,
+                auto_pay_amount: 0,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let mut task = Task::new("02sender", node.pubkey(), "insufficient");
+        task.payment_tx = Some("0xinsufficient".to_string());
+        task.payment_amount = Some(50); // less than required
+
+        assert!(
+            !node.verify_payment(&task).await,
+            "payment_amount < required_amount should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_payment_offline_none_amount_with_tx_hash() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 100,
+                auto_pay: false,
+                auto_pay_amount: 0,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let mut task = Task::new("02sender", node.pubkey(), "no amount");
+        task.payment_tx = Some("0xhash_but_no_amount".to_string());
+        task.payment_amount = None; // tx hash present but no amount
+
+        assert!(
+            !node.verify_payment(&task).await,
+            "None payment_amount with valid tx hash should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_payment_no_tx_hash() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 50,
+                auto_pay: false,
+                auto_pay_amount: 0,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let task = Task::new("02sender", node.pubkey(), "no tx hash");
+        assert!(
+            !node.verify_payment(&task).await,
+            "missing tx hash should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_payment_replay_blocks_second_use() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 50,
+                auto_pay: false,
+                auto_pay_amount: 0,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let mut task = Task::new("02sender", node.pubkey(), "replay test");
+        task.payment_tx = Some("0xreplay_direct".to_string());
+        task.payment_amount = Some(100);
+
+        assert!(node.verify_payment(&task).await, "first use should succeed");
+        assert!(
+            !node.verify_payment(&task).await,
+            "second use of same tx hash should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_payment_different_tx_hashes_both_accepted() {
+        let transport = MockTransport::new();
+        let backend = Arc::new(MockExecutionBackend);
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 50,
+                auto_pay: false,
+                auto_pay_amount: 0,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let mut task1 = Task::new("02sender", node.pubkey(), "first");
+        task1.payment_tx = Some("0xfirst_tx".to_string());
+        task1.payment_amount = Some(100);
+
+        let mut task2 = Task::new("02sender", node.pubkey(), "second");
+        task2.payment_tx = Some("0xsecond_tx".to_string());
+        task2.payment_amount = Some(100);
+
+        assert!(
+            node.verify_payment(&task1).await,
+            "first unique tx should be accepted"
+        );
+        assert!(
+            node.verify_payment(&task2).await,
+            "second unique tx should also be accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_payment_on_chain_exact_boundary() {
+        let transport = MockTransport::new();
+        let backend: Arc<dyn ExecutionBackend> = Arc::new(VerifyingBackend {
+            details: TransferDetails {
+                from: "0xsender".into(),
+                to: "0xrecipient".into(),
+                amount: 100, // exactly equals required
+                block_number: 1,
+            },
+        });
+
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 100,
+                auto_pay: false,
+                auto_pay_amount: 0,
+                verify_on_chain: true,
+                receiving_account: "0xrecipient".to_string(),
+            });
+
+        let mut task = Task::new("02sender", node.pubkey(), "exact on-chain");
+        task.payment_tx = Some("0xexact_onchain".to_string());
+        task.payment_amount = Some(100);
+
+        assert!(
+            node.verify_payment(&task).await,
+            "on-chain amount == required should be accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_payment_on_chain_empty_receiving_account_skips_check() {
+        let transport = MockTransport::new();
+        let backend: Arc<dyn ExecutionBackend> = Arc::new(VerifyingBackend {
+            details: TransferDetails {
+                from: "0xsender".into(),
+                to: "0xany_recipient".into(), // doesn't match any specific account
+                amount: 200,
+                block_number: 1,
+            },
+        });
+
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 100,
+                auto_pay: false,
+                auto_pay_amount: 0,
+                verify_on_chain: true,
+                receiving_account: String::new(), // empty → skip recipient check
+            });
+
+        let mut task = Task::new("02sender", node.pubkey(), "any recipient");
+        task.payment_tx = Some("0xany_recipient_tx".to_string());
+        task.payment_amount = Some(200);
+
+        assert!(
+            node.verify_payment(&task).await,
+            "empty receiving_account should skip recipient check"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_maybe_auto_pay_backend_failure() {
+        let backend = Arc::new(FailingPayBackend);
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config("test", "test", vec![], transport, fast_config())
+            .with_payment(PaymentConfig {
+                backend,
+                required_amount: 0,
+                auto_pay: true,
+                auto_pay_amount: 100,
+                verify_on_chain: false,
+                receiving_account: String::new(),
+            });
+
+        let task = Task::new(node.pubkey(), "02recipient", "pay fail");
+        let result = node.maybe_auto_pay(&task).await;
+        assert!(result.is_err(), "backend.pay() failure should propagate");
+        assert!(
+            result.unwrap_err().to_string().contains("auto-pay failed"),
+            "error should contain context"
+        );
     }
 }
