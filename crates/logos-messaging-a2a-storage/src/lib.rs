@@ -579,4 +579,238 @@ mod tests {
         let backend = LogosStorageRest::new("");
         assert_eq!(backend.base_url, "");
     }
+
+    // -----------------------------------------------------------------------
+    // StorageError additional coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn storage_error_source_returns_none() {
+        use std::error::Error;
+        let http_err = StorageError::Http("timeout".to_string());
+        assert!(http_err.source().is_none());
+
+        let api_err = StorageError::Api {
+            status: 404,
+            body: "not found".to_string(),
+        };
+        assert!(api_err.source().is_none());
+    }
+
+    #[test]
+    fn storage_error_display_empty_http_message() {
+        let err = StorageError::Http(String::new());
+        let display = err.to_string();
+        assert!(display.contains("HTTP"));
+        assert_eq!(display, "storage HTTP error: ");
+    }
+
+    #[test]
+    fn storage_error_display_empty_api_body() {
+        let err = StorageError::Api {
+            status: 500,
+            body: String::new(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("500"));
+        assert_eq!(display, "storage API error (500): ");
+    }
+
+    #[test]
+    fn storage_error_api_status_zero() {
+        let err = StorageError::Api {
+            status: 0,
+            body: "unusual".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("0"));
+        assert!(display.contains("unusual"));
+    }
+
+    #[test]
+    fn storage_error_http_with_multiline_message() {
+        let err = StorageError::Http("line1\nline2\nline3".to_string());
+        let display = err.to_string();
+        assert!(display.contains("line1\nline2\nline3"));
+    }
+
+    #[test]
+    fn storage_error_api_with_unicode_body() {
+        let err = StorageError::Api {
+            status: 400,
+            body: "invalid: \u{1F600} emoji in error".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("400"));
+        assert!(display.contains("\u{1F600}"));
+    }
+
+    #[test]
+    fn storage_error_debug_http_variant() {
+        let err = StorageError::Http("debug test".to_string());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("Http"));
+        assert!(debug.contains("debug test"));
+    }
+
+    #[test]
+    fn storage_error_debug_api_variant() {
+        let err = StorageError::Api {
+            status: 502,
+            body: "bad gateway".to_string(),
+        };
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("Api"));
+        assert!(debug.contains("502"));
+        assert!(debug.contains("bad gateway"));
+    }
+
+    // -----------------------------------------------------------------------
+    // maybe_offload edge cases
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn maybe_offload_max_usize_threshold_never_uploads() {
+        let backend = MockStorage::new();
+        let data = vec![0u8; 1024];
+        let result = maybe_offload(&backend, &data, usize::MAX).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn maybe_offload_returns_valid_cid_from_backend() {
+        let backend = MockStorage::new();
+        let data = vec![42u8; 200];
+        let result = maybe_offload(&backend, &data, 100).await.unwrap();
+        let cid = result.expect("should have uploaded");
+        assert!(cid.starts_with("zMock"));
+        // Verify the CID is actually retrievable
+        let downloaded = backend.download(&cid).await.unwrap();
+        assert_eq!(downloaded, data);
+    }
+
+    // -----------------------------------------------------------------------
+    // MockStorage edge cases
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn mock_storage_upload_binary_with_null_bytes() {
+        let backend = MockStorage::new();
+        let data = vec![0x00, 0x00, 0x01, 0x00, 0xff];
+        let cid = backend.upload(data.clone()).await.unwrap();
+        let downloaded = backend.download(&cid).await.unwrap();
+        assert_eq!(data, downloaded);
+    }
+
+    #[tokio::test]
+    async fn mock_storage_upload_all_byte_values() {
+        let backend = MockStorage::new();
+        let data: Vec<u8> = (0..=255).collect();
+        let cid = backend.upload(data.clone()).await.unwrap();
+        let downloaded = backend.download(&cid).await.unwrap();
+        assert_eq!(data, downloaded);
+    }
+
+    #[tokio::test]
+    async fn mock_storage_download_returns_independent_copies() {
+        let backend = MockStorage::new();
+        let data = b"original".to_vec();
+        let cid = backend.upload(data.clone()).await.unwrap();
+
+        let first = backend.download(&cid).await.unwrap();
+        let second = backend.download(&cid).await.unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first, data);
+    }
+
+    // -----------------------------------------------------------------------
+    // FailingStorage edge cases
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn failing_storage_upload_empty_data_still_fails() {
+        let backend = FailingStorage;
+        let result = backend.upload(Vec::new()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn failing_storage_download_error_contains_status() {
+        let backend = FailingStorage;
+        let err = backend.download("any").await.unwrap_err();
+        match err {
+            StorageError::Api { status, .. } => assert_eq!(status, 500),
+            other => panic!("expected Api error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn maybe_offload_with_failing_backend_below_threshold_succeeds() {
+        // Below threshold, failing backend should never be called
+        let backend = FailingStorage;
+        let result = maybe_offload(&backend, &[1, 2, 3], 100).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // LogosStorageRest constructor edge cases
+    // -----------------------------------------------------------------------
+
+    #[cfg(feature = "rest")]
+    #[test]
+    fn logos_storage_rest_url_with_path_suffix() {
+        let backend = LogosStorageRest::new("http://proxy.example.com/codex");
+        assert_eq!(backend.base_url, "http://proxy.example.com/codex");
+    }
+
+    #[cfg(feature = "rest")]
+    #[test]
+    fn logos_storage_rest_url_with_port_and_trailing_slash() {
+        let backend = LogosStorageRest::new("http://192.168.1.100:3000/");
+        assert_eq!(backend.base_url, "http://192.168.1.100:3000");
+    }
+
+    #[cfg(feature = "rest")]
+    #[test]
+    fn logos_storage_rest_default_local_url() {
+        let backend = LogosStorageRest::default_local();
+        assert_eq!(backend.base_url, "http://127.0.0.1:8080");
+    }
+
+    #[cfg(feature = "rest")]
+    #[test]
+    fn logos_storage_rest_url_only_slashes() {
+        let backend = LogosStorageRest::new("///");
+        assert_eq!(backend.base_url, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // Trait object usage
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn storage_backend_as_trait_object() {
+        let backend: Box<dyn StorageBackend> = Box::new(MockStorage::new());
+        let cid = backend.upload(b"trait object test".to_vec()).await.unwrap();
+        let downloaded = backend.download(&cid).await.unwrap();
+        assert_eq!(downloaded, b"trait object test");
+    }
+
+    #[tokio::test]
+    async fn storage_backend_as_arc_trait_object() {
+        use std::sync::Arc;
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockStorage::new());
+        let cid = backend.upload(b"arc test".to_vec()).await.unwrap();
+        let downloaded = backend.download(&cid).await.unwrap();
+        assert_eq!(downloaded, b"arc test");
+    }
+
+    #[tokio::test]
+    async fn storage_backend_ref_trait_object() {
+        let backend = MockStorage::new();
+        let backend_ref: &dyn StorageBackend = &backend;
+        let cid = backend_ref.upload(b"ref test".to_vec()).await.unwrap();
+        let downloaded = backend_ref.download(&cid).await.unwrap();
+        assert_eq!(downloaded, b"ref test");
+    }
 }
