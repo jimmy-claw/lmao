@@ -445,6 +445,7 @@ polling for the result within a configurable timeout.
 | `FirstAvailable` | Pick the first live peer (any capability) |
 | `CapabilityMatch { capability }` | Pick a peer that advertises a specific capability |
 | `BroadcastCollect` | Send the subtask to **all** matching peers and collect every response |
+| `RoundRobin` | Distribute subtasks evenly across peers using an atomic rotating counter |
 
 ### API usage
 
@@ -486,6 +487,9 @@ lmao task delegate --capability text --text "Hello everyone" --broadcast
 
 # Custom timeout and parent task ID
 lmao task delegate --capability code --text "Review PR" --parent-id task-42 --timeout 60
+
+# Round-robin across all live peers
+lmao task delegate --strategy round-robin --text "Distribute this evenly"
 ```
 
 ## Task Streaming

@@ -8,6 +8,8 @@ pub enum DelegationStrategy {
     FirstAvailable,
     /// Broadcast to all matching peers and collect responses.
     BroadcastCollect,
+    /// Distribute subtasks evenly across peers using round-robin rotation.
+    RoundRobin,
     /// Pick a peer that advertises a specific capability.
     CapabilityMatch {
         /// The required capability string.
@@ -66,6 +68,15 @@ mod tests {
         let strategy = DelegationStrategy::BroadcastCollect;
         let json = serde_json::to_string(&strategy).unwrap();
         assert!(json.contains("\"type\":\"broadcast_collect\""));
+        let deserialized: DelegationStrategy = serde_json::from_str(&json).unwrap();
+        assert_eq!(strategy, deserialized);
+    }
+
+    #[test]
+    fn test_delegation_strategy_round_robin_serialization() {
+        let strategy = DelegationStrategy::RoundRobin;
+        let json = serde_json::to_string(&strategy).unwrap();
+        assert!(json.contains("\"type\":\"round_robin\""));
         let deserialized: DelegationStrategy = serde_json::from_str(&json).unwrap();
         assert_eq!(strategy, deserialized);
     }
@@ -187,6 +198,7 @@ mod tests {
         let variants: Vec<DelegationStrategy> = vec![
             DelegationStrategy::FirstAvailable,
             DelegationStrategy::BroadcastCollect,
+            DelegationStrategy::RoundRobin,
             DelegationStrategy::CapabilityMatch {
                 capability: "x".to_string(),
             },

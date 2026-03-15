@@ -98,6 +98,7 @@ pub async fn handle(
             parent_id,
             timeout,
             broadcast,
+            strategy,
         } => {
             let node = build_node(
                 "cli-delegator",
@@ -129,6 +130,22 @@ pub async fn handle(
                     Err(e) => eprintln!("Failed to delegate: {}", e),
                 }
                 return Ok(());
+            } else if let Some(ref s) = strategy {
+                match s.as_str() {
+                    "round-robin" => DelegationStrategy::RoundRobin,
+                    "broadcast" => DelegationStrategy::BroadcastCollect,
+                    "first-available" => DelegationStrategy::FirstAvailable,
+                    other => {
+                        if let Some(ref cap) = capability {
+                            DelegationStrategy::CapabilityMatch {
+                                capability: cap.clone(),
+                            }
+                        } else {
+                            eprintln!("Unknown strategy '{other}', using first-available");
+                            DelegationStrategy::FirstAvailable
+                        }
+                    }
+                }
             } else if let Some(ref cap) = capability {
                 DelegationStrategy::CapabilityMatch {
                     capability: cap.clone(),

@@ -107,6 +107,9 @@ pub enum TaskAction {
         /// Broadcast to all matching peers instead of just one
         #[arg(long)]
         broadcast: bool,
+        /// Delegation strategy: first-available, broadcast, round-robin
+        #[arg(long)]
+        strategy: Option<String>,
     },
 }
 
@@ -627,6 +630,7 @@ mod tests {
                         parent_id,
                         timeout,
                         broadcast,
+                        strategy,
                     },
             } => {
                 assert_eq!(to, Some("02abcdef".to_string()));
@@ -635,6 +639,7 @@ mod tests {
                 assert_eq!(parent_id, "cli");
                 assert_eq!(timeout, 30);
                 assert!(!broadcast);
+                assert!(strategy.is_none());
             }
             _ => panic!("expected Task Delegate"),
         }
@@ -714,6 +719,29 @@ mod tests {
                 action: TaskAction::Delegate { timeout, .. },
             } => {
                 assert_eq!(timeout, 5);
+            }
+            _ => panic!("expected Task Delegate"),
+        }
+    }
+
+    #[test]
+    fn task_delegate_round_robin_strategy() {
+        let cli = try_parse(&[
+            "cli",
+            "task",
+            "delegate",
+            "--text",
+            "round robin task",
+            "--strategy",
+            "round-robin",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Task {
+                action: TaskAction::Delegate { strategy, text, .. },
+            } => {
+                assert_eq!(strategy, Some("round-robin".to_string()));
+                assert_eq!(text, "round robin task");
             }
             _ => panic!("expected Task Delegate"),
         }

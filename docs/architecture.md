@@ -397,6 +397,7 @@ Orchestrator               PeerMap                  Worker A / Worker B
   │     subtask_text,         │  FirstAvailable           │
   │     strategy,             │  CapabilityMatch("code")  │
   │     timeout_secs }        │  BroadcastCollect         │
+  │                           │  RoundRobin               │
   │                           │                           │
   │   select peer(s) ◀───────│                           │
   │                           │                           │
@@ -417,7 +418,8 @@ Orchestrator               PeerMap                  Worker A / Worker B
 DelegationStrategy (tagged enum)
 ├── FirstAvailable                pick any live peer
 ├── CapabilityMatch { capability } pick a peer with matching capability
-└── BroadcastCollect              send to all, collect every response
+├── BroadcastCollect              send to all, collect every response
+└── RoundRobin                    rotate through peers with atomic counter
 
 DelegationRequest
 ├── parent_task_id: String
