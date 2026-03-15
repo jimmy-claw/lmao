@@ -10,6 +10,7 @@ use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 use tracing_subscriber::EnvFilter;
 
 use cli::{Cli, Commands};
+use common::IdentityConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,10 +21,14 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let transport = LogosMessagingTransport::new(&cli.waku);
+    let identity = IdentityConfig {
+        keyfile: cli.keyfile,
+        encrypt: cli.encrypt,
+    };
 
     match cli.command {
-        Commands::Agent { action } => agent::handle(action, transport).await,
-        Commands::Task { action } => task::handle(action, transport).await,
-        Commands::Presence { action } => presence::handle(action, transport).await,
+        Commands::Agent { action } => agent::handle(action, transport, &identity).await,
+        Commands::Task { action } => task::handle(action, transport, &identity).await,
+        Commands::Presence { action } => presence::handle(action, transport, &identity).await,
     }
 }

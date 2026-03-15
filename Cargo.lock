@@ -2296,6 +2296,7 @@ dependencies = [
  "logos-messaging-a2a-transport",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
 ]
@@ -2344,6 +2345,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -2432,6 +2434,7 @@ dependencies = [
  "tracing",
  "uuid",
  "waku-bindings",
+ "wiremock",
 ]
 
 [[package]]

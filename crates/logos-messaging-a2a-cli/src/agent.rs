@@ -1,39 +1,29 @@
 use anyhow::Result;
-use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 use crate::cli::AgentAction;
-use crate::common::parse_capabilities;
+use crate::common::{build_node, parse_capabilities, IdentityConfig};
 
-pub async fn handle(action: AgentAction, transport: LogosMessagingTransport) -> Result<()> {
+pub async fn handle(
+    action: AgentAction,
+    transport: LogosMessagingTransport,
+    identity: &IdentityConfig,
+) -> Result<()> {
     match action {
-        AgentAction::Run {
-            name,
-            capabilities,
-            encrypt,
-            keyfile,
-        } => {
+        AgentAction::Run { name, capabilities } => {
             let caps = parse_capabilities(&capabilities);
-            let node = if let Some(path) = keyfile {
-                println!("Using keyfile: {}", path.display());
-                WakuA2ANode::from_keyfile(
-                    &name,
-                    &format!("{} agent", name),
-                    caps,
-                    transport,
-                    &path,
-                )?
-            } else if encrypt {
-                WakuA2ANode::new_encrypted(&name, &format!("{} agent", name), caps, transport)
-            } else {
-                WakuA2ANode::new(&name, &format!("{} agent", name), caps, transport)
-            };
+            let node = build_node(&name, &format!("{} agent", name), caps, transport, identity)?;
+
+            if let Some(ref kf) = identity.keyfile {
+                println!("Using keyfile: {}", kf.display());
+            }
             println!("Agent: {}", node.card.name);
             println!("Pubkey: {}", node.pubkey());
-            if encrypt {
-                let bundle = node.card.intro_bundle.as_ref().unwrap();
-                println!("Encryption: ENABLED (X25519+ChaCha20-Poly1305)");
-                println!("X25519 pubkey: {}", bundle.agent_pubkey);
+            if identity.encrypt {
+                if let Some(ref bundle) = node.card.intro_bundle {
+                    println!("Encryption: ENABLED (X25519+ChaCha20-Poly1305)");
+                    println!("X25519 pubkey: {}", bundle.agent_pubkey);
+                }
             }
             println!("Listening for tasks...\n");
 
@@ -68,7 +58,7 @@ pub async fn handle(action: AgentAction, transport: LogosMessagingTransport) -> 
             }
         }
         AgentAction::Discover => {
-            let node = WakuA2ANode::new("discovery-client", "temporary", vec![], transport);
+            let node = build_node("discovery-client", "temporary", vec![], transport, identity)?;
             match node.discover().await {
                 Ok(cards) => {
                     if cards.is_empty() {
@@ -93,7 +83,11 @@ pub async fn handle(action: AgentAction, transport: LogosMessagingTransport) -> 
             }
         }
         AgentAction::Bundle => {
-            let node = WakuA2ANode::new_encrypted("bundle-gen", "temporary", vec![], transport);
+            let encrypt_id = IdentityConfig {
+                keyfile: identity.keyfile.clone(),
+                encrypt: true,
+            };
+            let node = build_node("bundle-gen", "temporary", vec![], transport, &encrypt_id)?;
             let bundle = node.card.intro_bundle.as_ref().unwrap();
             let json = serde_json::to_string_pretty(bundle)?;
             println!("{}", json);

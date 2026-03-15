@@ -11,6 +11,16 @@ pub struct Cli {
     #[arg(long, default_value = "http://localhost:8645", global = true)]
     pub waku: String,
 
+    /// Path to a persistent identity keyfile (hex-encoded 32-byte signing key).
+    /// If the file does not exist, a new key is generated and saved.
+    /// When provided, all commands share the same identity.
+    #[arg(long, global = true)]
+    pub keyfile: Option<PathBuf>,
+
+    /// Enable X25519+ChaCha20-Poly1305 encryption for this identity.
+    #[arg(long, global = true)]
+    pub encrypt: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -44,13 +54,6 @@ pub enum AgentAction {
         /// Comma-separated capabilities
         #[arg(long, default_value = "text")]
         capabilities: String,
-        /// Enable X25519+ChaCha20-Poly1305 encryption
-        #[arg(long)]
-        encrypt: bool,
-        /// Path to a persistent identity keyfile (hex-encoded 32-byte signing key).
-        /// If the file does not exist, a new key is generated and saved.
-        #[arg(long)]
-        keyfile: Option<PathBuf>,
     },
     /// Discover agents on the network
     Discover,
@@ -102,9 +105,6 @@ pub enum PresenceAction {
         /// Keep re-announcing every ttl/2 seconds
         #[arg(long)]
         repeat: bool,
-        /// Generate encrypted identity (X25519+ChaCha20-Poly1305)
-        #[arg(long)]
-        encrypt: bool,
     },
     /// Listen for presence announcements
     Discover {
@@ -141,6 +141,48 @@ mod tests {
         Cli::try_parse_from(args)
     }
 
+    // ── Global identity flags ──
+
+    #[test]
+    fn global_keyfile_flag() {
+        let cli = try_parse(&["cli", "--keyfile", "/tmp/my.key", "agent", "discover"]).unwrap();
+        assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/my.key")));
+        assert!(!cli.encrypt);
+    }
+
+    #[test]
+    fn global_encrypt_flag() {
+        let cli = try_parse(&["cli", "--encrypt", "agent", "discover"]).unwrap();
+        assert!(cli.encrypt);
+        assert!(cli.keyfile.is_none());
+    }
+
+    #[test]
+    fn global_keyfile_and_encrypt() {
+        let cli = try_parse(&[
+            "cli",
+            "--keyfile",
+            "/tmp/id.key",
+            "--encrypt",
+            "task",
+            "send",
+            "--to",
+            "abc",
+            "--text",
+            "hi",
+        ])
+        .unwrap();
+        assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/id.key")));
+        assert!(cli.encrypt);
+    }
+
+    #[test]
+    fn global_flags_work_after_subcommand() {
+        // clap global flags can appear after the subcommand too
+        let cli = try_parse(&["cli", "agent", "discover", "--keyfile", "/tmp/late.key"]).unwrap();
+        assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/late.key")));
+    }
+
     // ── Presence Announce ──
 
     #[test]
@@ -160,14 +202,12 @@ mod tests {
                         capabilities,
                         ttl,
                         repeat,
-                        encrypt,
                     },
             } => {
                 assert_eq!(name, "echo");
                 assert_eq!(capabilities, "text");
                 assert_eq!(ttl, 300);
                 assert!(!repeat);
-                assert!(!encrypt);
             }
             _ => panic!("expected Presence Announce"),
         }
@@ -177,6 +217,7 @@ mod tests {
     fn presence_announce_all_flags() {
         let cli = try_parse(&[
             "cli",
+            "--encrypt",
             "presence",
             "announce",
             "--name",
@@ -186,9 +227,9 @@ mod tests {
             "--ttl",
             "600",
             "--repeat",
-            "--encrypt",
         ])
         .unwrap();
+        assert!(cli.encrypt);
         match cli.command {
             Commands::Presence {
                 action:
@@ -197,14 +238,12 @@ mod tests {
                         capabilities,
                         ttl,
                         repeat,
-                        encrypt,
                     },
             } => {
                 assert_eq!(name, "bot");
                 assert_eq!(capabilities, "text,code");
                 assert_eq!(ttl, 600);
                 assert!(repeat);
-                assert!(encrypt);
             }
             _ => panic!("expected Presence Announce"),
         }
@@ -383,64 +422,37 @@ mod tests {
         let cli = try_parse(&["cli", "agent", "run", "--name", "echo"]).unwrap();
         match cli.command {
             Commands::Agent {
-                action:
-                    AgentAction::Run {
-                        name,
-                        capabilities,
-                        encrypt,
-                        keyfile,
-                    },
+                action: AgentAction::Run { name, capabilities },
             } => {
                 assert_eq!(name, "echo");
                 assert_eq!(capabilities, "text");
-                assert!(!encrypt);
-                assert!(keyfile.is_none());
             }
             _ => panic!("expected Agent Run"),
         }
+        assert!(!cli.encrypt);
+        assert!(cli.keyfile.is_none());
     }
 
     #[test]
-    fn agent_run_with_encrypt() {
-        let cli = try_parse(&["cli", "agent", "run", "--name", "secure", "--encrypt"]).unwrap();
-        match cli.command {
-            Commands::Agent {
-                action: AgentAction::Run { encrypt, .. },
-            } => {
-                assert!(encrypt);
-            }
-            _ => panic!("expected Agent Run"),
-        }
+    fn agent_run_with_global_encrypt() {
+        let cli = try_parse(&["cli", "--encrypt", "agent", "run", "--name", "secure"]).unwrap();
+        assert!(cli.encrypt);
     }
 
     #[test]
-    fn agent_run_with_keyfile() {
+    fn agent_run_with_global_keyfile() {
         let cli = try_parse(&[
             "cli",
+            "--keyfile",
+            "/tmp/agent.key",
             "agent",
             "run",
             "--name",
             "persistent",
-            "--keyfile",
-            "/tmp/agent.key",
         ])
         .unwrap();
-        match cli.command {
-            Commands::Agent {
-                action:
-                    AgentAction::Run {
-                        name,
-                        keyfile,
-                        encrypt,
-                        ..
-                    },
-            } => {
-                assert_eq!(name, "persistent");
-                assert_eq!(keyfile, Some(PathBuf::from("/tmp/agent.key")));
-                assert!(!encrypt);
-            }
-            _ => panic!("expected Agent Run"),
-        }
+        assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/agent.key")));
+        assert!(!cli.encrypt);
     }
 
     // ── Task Send details ──
