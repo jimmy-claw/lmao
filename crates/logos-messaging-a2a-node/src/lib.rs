@@ -7,6 +7,7 @@
 //! sessions, stream responses, and handle payments over a Waku-compatible
 //! transport layer.
 
+pub mod delegation;
 pub mod discovery;
 pub mod payment;
 pub mod presence;

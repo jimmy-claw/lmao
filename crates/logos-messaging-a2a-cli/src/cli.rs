@@ -87,6 +87,27 @@ pub enum TaskAction {
         #[arg(long, default_value = "30")]
         timeout: u64,
     },
+    /// Delegate a subtask to a peer agent
+    Delegate {
+        /// Recipient agent public key (hex) — direct delegation
+        #[arg(long)]
+        to: Option<String>,
+        /// Required capability — discovery-based delegation
+        #[arg(long)]
+        capability: Option<String>,
+        /// Text of the subtask to delegate
+        #[arg(long)]
+        text: String,
+        /// Parent task ID this subtask belongs to
+        #[arg(long, default_value = "cli")]
+        parent_id: String,
+        /// Timeout in seconds for the delegation
+        #[arg(long, default_value = "30")]
+        timeout: u64,
+        /// Broadcast to all matching peers instead of just one
+        #[arg(long)]
+        broadcast: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -579,6 +600,128 @@ mod tests {
     #[test]
     fn task_stream_missing_id() {
         let err = try_parse(&["cli", "task", "stream"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    // ── Task Delegate ──
+
+    #[test]
+    fn task_delegate_with_to() {
+        let cli = try_parse(&[
+            "cli",
+            "task",
+            "delegate",
+            "--to",
+            "02abcdef",
+            "--text",
+            "do something",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Task {
+                action:
+                    TaskAction::Delegate {
+                        to,
+                        capability,
+                        text,
+                        parent_id,
+                        timeout,
+                        broadcast,
+                    },
+            } => {
+                assert_eq!(to, Some("02abcdef".to_string()));
+                assert!(capability.is_none());
+                assert_eq!(text, "do something");
+                assert_eq!(parent_id, "cli");
+                assert_eq!(timeout, 30);
+                assert!(!broadcast);
+            }
+            _ => panic!("expected Task Delegate"),
+        }
+    }
+
+    #[test]
+    fn task_delegate_with_capability() {
+        let cli = try_parse(&[
+            "cli",
+            "task",
+            "delegate",
+            "--capability",
+            "summarize",
+            "--text",
+            "summarize this",
+            "--parent-id",
+            "task-42",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Task {
+                action:
+                    TaskAction::Delegate {
+                        to,
+                        capability,
+                        text,
+                        parent_id,
+                        ..
+                    },
+            } => {
+                assert!(to.is_none());
+                assert_eq!(capability, Some("summarize".to_string()));
+                assert_eq!(text, "summarize this");
+                assert_eq!(parent_id, "task-42");
+            }
+            _ => panic!("expected Task Delegate"),
+        }
+    }
+
+    #[test]
+    fn task_delegate_broadcast_flag() {
+        let cli = try_parse(&[
+            "cli",
+            "task",
+            "delegate",
+            "--capability",
+            "text",
+            "--text",
+            "broadcast",
+            "--broadcast",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Task {
+                action: TaskAction::Delegate { broadcast, .. },
+            } => {
+                assert!(broadcast);
+            }
+            _ => panic!("expected Task Delegate"),
+        }
+    }
+
+    #[test]
+    fn task_delegate_custom_timeout() {
+        let cli = try_parse(&[
+            "cli",
+            "task",
+            "delegate",
+            "--text",
+            "quick",
+            "--timeout",
+            "5",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Task {
+                action: TaskAction::Delegate { timeout, .. },
+            } => {
+                assert_eq!(timeout, 5);
+            }
+            _ => panic!("expected Task Delegate"),
+        }
+    }
+
+    #[test]
+    fn task_delegate_missing_text() {
+        let err = try_parse(&["cli", "task", "delegate", "--to", "02ab"]).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
     }
 }
