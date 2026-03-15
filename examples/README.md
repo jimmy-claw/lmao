@@ -30,6 +30,24 @@ cargo run --example ping_pong
 cargo run --example ping_pong -- --encrypt
 ```
 
+## presence_discovery — Full Agent Lifecycle
+
+Demonstrates the complete LMAO agent lifecycle: presence broadcast, peer discovery via the signed peer map, capability-based lookup, and a full task round-trip between two agents.
+
+**What happens:**
+
+1. **Alice** and **Bob** are created with `InMemoryTransport`
+2. Both agents broadcast signed presence announcements (`announce_presence`)
+3. Both agents poll presence (`poll_presence`) and discover each other in the peer map
+4. Alice finds Bob by capability (`summarization`) using `find_peers_by_capability`
+5. Alice sends a task to Bob
+6. Bob processes and responds
+7. Alice receives the response — full round-trip complete
+
+```bash
+cargo run --example presence_discovery
+```
+
 ## echo_agent — Simple Echo
 
 Single agent that echoes back any message it receives.
