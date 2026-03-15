@@ -2344,6 +2344,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -2432,6 +2433,7 @@ dependencies = [
  "tracing",
  "uuid",
  "waku-bindings",
+ "wiremock",
 ]
 
 [[package]]

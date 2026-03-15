@@ -192,6 +192,30 @@ impl ExecutionBackend for VerifyingBackend {
     }
 }
 
+/// Mock backend where `pay()` always fails.
+pub struct FailingPayBackend;
+
+#[async_trait]
+impl ExecutionBackend for FailingPayBackend {
+    async fn register_agent(&self, _card: &AgentCard) -> anyhow::Result<TxHash> {
+        Ok(TxHash([0; 32]))
+    }
+    async fn pay(&self, _to: &AgentId, _amount: u64) -> anyhow::Result<TxHash> {
+        anyhow::bail!("payment failed: insufficient funds")
+    }
+    async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+        Ok(TransferDetails {
+            from: String::new(),
+            to: String::new(),
+            amount: 0,
+            block_number: 0,
+        })
+    }
+}
+
 /// Mock backend where verify_transfer always fails.
 pub struct FailingVerifyBackend;
 
