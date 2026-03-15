@@ -272,7 +272,7 @@ LOGOS_CORE_LIB_DIR=/path/to/sdk/lib make demo-logos-core-real
 | `logos-messaging-a2a-core` | A2A types: `AgentCard`, `Task`, `Message`, `Part` |
 | `logos-messaging-a2a-transport` | `Transport` trait + nwaku REST + `InMemoryTransport` + `LogosCoreDeliveryTransport` + SDS reliability |
 | `logos-messaging-a2a-storage` | `StorageBackend` trait + Logos Storage (Codex) REST + `LogosCoreStorageBackend` |
-| `logos-messaging-a2a-node` | A2A node: announce, discover, send/receive tasks, presence, payments |
+| `logos-messaging-a2a-node` | A2A node: announce, discover, send/receive tasks, presence, payments, delegation |
 | `logos-messaging-a2a-execution` | `ExecutionBackend` trait + Status Network (EVM) + LEZ backends for on-chain payments & agent registration |
 | `logos-messaging-a2a-cli` | CLI for interacting with the network |
 | `logos-messaging-a2a-mcp` | MCP bridge — expose agents as tools for Claude, Cursor, etc. |
@@ -296,6 +296,7 @@ cargo run -p logos-messaging-a2a-cli -- --waku http://localhost:8645 <command>
 | `task send --to <pubkey> --text <msg>` | Send a task to an agent |
 | `task status --id <uuid>` | Check task status / poll for response |
 | `task stream --id <uuid> [--timeout <s>]` | Follow a task's streaming output |
+| `task delegate --text <msg> [--to <pk>] [--capability <c>] [--broadcast]` | Delegate a subtask to a peer agent |
 | `presence announce --name <n>` | Announce this agent on the presence topic |
 | `presence discover [--capability <c>]` | Listen for presence announcements |
 | `presence peers [--capability <c>]` | Discover and list unique peers |
@@ -430,6 +431,63 @@ let sender = WakuA2ANode::new("client", "Client", vec![], transport.clone())
 Currently supported backends: `StatusNetworkBackend` (Status Network Sepolia).
 `LezExecutionBackend` is stubbed for future LEZ chain support.
 
+## Task Delegation
+
+An orchestrator agent can decompose work into subtasks and delegate them to
+peer agents discovered via presence. Delegation uses the live `PeerMap` to find
+suitable peers by capability and sends each subtask as a regular A2A `Task`,
+polling for the result within a configurable timeout.
+
+### Delegation strategies
+
+| Strategy | Behaviour |
+|----------|-----------|
+| `FirstAvailable` | Pick the first live peer (any capability) |
+| `CapabilityMatch { capability }` | Pick a peer that advertises a specific capability |
+| `BroadcastCollect` | Send the subtask to **all** matching peers and collect every response |
+
+### API usage
+
+```rust
+use logos_messaging_a2a::{DelegationRequest, DelegationStrategy, WakuA2ANode};
+
+// Build a delegation request
+let request = DelegationRequest {
+    parent_task_id: "task-001".to_string(),
+    subtask_text: "Summarize this document".to_string(),
+    strategy: DelegationStrategy::CapabilityMatch {
+        capability: "summarize".to_string(),
+    },
+    timeout_secs: 30,
+};
+
+// Delegate to a single matching peer
+let result = node.delegate_task(&request).await?;
+println!("success={} result={:?}", result.success, result.result_text);
+
+// Or broadcast to all matching peers
+let results = node.delegate_broadcast(&request).await?;
+for r in &results {
+    println!("[{}] {}", r.agent_id, r.result_text.as_deref().unwrap_or("–"));
+}
+```
+
+### CLI usage
+
+```bash
+# Delegate by capability (auto-discovers a peer)
+lmao task delegate --capability summarize --text "Summarize this"
+
+# Delegate to a specific agent
+lmao task delegate --to 02abcdef... --text "Do something"
+
+# Broadcast to all matching peers
+lmao task delegate --capability text --text "Hello everyone" --broadcast
+
+# Custom timeout and parent task ID
+lmao task delegate --capability code --text "Review PR" --parent-id task-42 --timeout 60
+```
+
 ## Task Streaming
 
 Agents can send partial results incrementally as **stream chunks** over
@@ -543,6 +601,7 @@ module/
 - [x] x402 payment flow — auto-pay, payment gating, on-chain verification, replay protection
 - [x] End-to-end demo — two agents, one task, payment flow, InMemoryTransport
 - [x] Task streaming — partial results over dedicated Waku stream topics
+- [x] Task delegation — multi-agent subtask forwarding with capability-based routing
 - [ ] Logos Chat SDK — Double Ratchet for forward secrecy
 - [ ] LEZ agent registry — on-chain AgentCards via SPELbook
 - [ ] Logos Core plugin — packaged `.lgx` module

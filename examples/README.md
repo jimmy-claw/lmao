@@ -48,6 +48,24 @@ Demonstrates the complete LMAO agent lifecycle: presence broadcast, peer discove
 cargo run --example presence_discovery
 ```
 
+## task_delegation — Multi-Agent Subtask Forwarding
+
+Demonstrates an orchestrator agent that decomposes a parent task into subtasks and delegates each one to a specialist peer discovered via presence — capability-based routing with `DelegationStrategy`.
+
+**What happens:**
+
+1. **Orchestrator**, **Summarizer**, and **Translator** are created with `InMemoryTransport`
+2. All three agents broadcast signed presence announcements
+3. Orchestrator discovers peers and their capabilities via the peer map
+4. Orchestrator delegates a summarization subtask — routed to the summarizer via `CapabilityMatch`
+5. Orchestrator delegates a translation subtask — routed to the translator via `CapabilityMatch`
+6. Each worker processes its subtask and responds
+7. Orchestrator collects `DelegationResult`s with success status and result text
+
+```bash
+cargo run --example task_delegation
+```
+
 ## echo_agent — Simple Echo
 
 Single agent that echoes back any message it receives.
