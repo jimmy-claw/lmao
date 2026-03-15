@@ -1,15 +1,20 @@
 use anyhow::Result;
 use logos_messaging_a2a_core::Task;
-use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 
 use crate::cli::TaskAction;
+use crate::common::{build_node, IdentityConfig};
 
-pub async fn handle(action: TaskAction, transport: LogosMessagingTransport) -> Result<()> {
+pub async fn handle(
+    action: TaskAction,
+    transport: LogosMessagingTransport,
+    identity: &IdentityConfig,
+) -> Result<()> {
     match action {
         TaskAction::Send { to, text } => {
-            let node = WakuA2ANode::new("cli-sender", "CLI client", vec![], transport);
+            let node = build_node("cli-sender", "CLI client", vec![], transport, identity)?;
             println!("Sending task to {}...", &to[..12.min(to.len())]);
+            println!("From pubkey: {}", node.pubkey());
             let task = Task::new(node.pubkey(), &to, &text);
             match node.send_task(&task).await {
                 Ok(acked) => {
@@ -27,8 +32,9 @@ pub async fn handle(action: TaskAction, transport: LogosMessagingTransport) -> R
             }
         }
         TaskAction::Status { id } => {
-            let node = WakuA2ANode::new("cli-poller", "CLI client", vec![], transport);
+            let node = build_node("cli-poller", "CLI client", vec![], transport, identity)?;
             println!("Polling for task {} responses...", id);
+            println!("Listening as: {}", node.pubkey());
             match node.poll_tasks().await {
                 Ok(tasks) => {
                     let found: Vec<_> = tasks.iter().filter(|t| t.id == id).collect();
@@ -50,7 +56,7 @@ pub async fn handle(action: TaskAction, transport: LogosMessagingTransport) -> R
             }
         }
         TaskAction::Stream { id, timeout } => {
-            let node = WakuA2ANode::new("cli-stream", "CLI client", vec![], transport);
+            let node = build_node("cli-stream", "CLI client", vec![], transport, identity)?;
             println!(
                 "Following stream for task {} (timeout {}s)...\n",
                 id, timeout

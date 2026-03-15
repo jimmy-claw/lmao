@@ -1,10 +1,9 @@
 use anyhow::Result;
-use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 use std::collections::HashSet;
 
 use crate::cli::PresenceAction;
-use crate::common::parse_capabilities;
+use crate::common::{build_node, parse_capabilities, IdentityConfig};
 
 fn print_peer(agent_id: &str, info: &logos_messaging_a2a_node::presence::PeerInfo) {
     let expired = if info.is_expired() { " [EXPIRED]" } else { "" };
@@ -17,26 +16,25 @@ fn print_peer(agent_id: &str, info: &logos_messaging_a2a_node::presence::PeerInf
     println!();
 }
 
-pub async fn handle(action: PresenceAction, transport: LogosMessagingTransport) -> Result<()> {
+pub async fn handle(
+    action: PresenceAction,
+    transport: LogosMessagingTransport,
+    identity: &IdentityConfig,
+) -> Result<()> {
     match action {
         PresenceAction::Announce {
             name,
             capabilities,
             ttl,
             repeat,
-            encrypt,
         } => {
             let caps = parse_capabilities(&capabilities);
-            let node = if encrypt {
-                WakuA2ANode::new_encrypted(&name, &format!("{} agent", name), caps, transport)
-            } else {
-                WakuA2ANode::new(&name, &format!("{} agent", name), caps, transport)
-            };
+            let node = build_node(&name, &format!("{} agent", name), caps, transport, identity)?;
 
             println!("Announcing presence: {}", node.card.name);
             println!("Pubkey: {}", node.pubkey());
             println!("TTL: {}s", ttl);
-            if encrypt {
+            if identity.encrypt {
                 println!("Encryption: ENABLED");
             }
 
@@ -65,7 +63,13 @@ pub async fn handle(action: PresenceAction, transport: LogosMessagingTransport) 
             watch,
             timeout,
         } => {
-            let node = WakuA2ANode::new("presence-discover", "temporary", vec![], transport);
+            let node = build_node(
+                "presence-discover",
+                "temporary",
+                vec![],
+                transport,
+                identity,
+            )?;
 
             if watch {
                 println!("Watching for presence announcements (Ctrl-C to stop)...\n");
@@ -123,7 +127,7 @@ pub async fn handle(action: PresenceAction, transport: LogosMessagingTransport) 
             watch,
             timeout,
         } => {
-            let node = WakuA2ANode::new("presence-peers", "temporary", vec![], transport);
+            let node = build_node("presence-peers", "temporary", vec![], transport, identity)?;
 
             if watch {
                 println!("Watching for unique peers (Ctrl-C to stop)...\n");
