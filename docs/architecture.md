@@ -29,6 +29,7 @@
 │  │  • poll_tasks()   — receive incoming tasks              │         │
 │  │  • respond()      — reply to a task                     │         │
 │  │  • presence       — PeerMap with heartbeat broadcasts   │         │
+│  │  • delegate_task()— forward subtasks to capable peers  │         │
 │  │                                                         │         │
 │  │  Identity: secp256k1 keypair                            │         │
 │  │  Integrates: crypto, execution, storage, transport      │         │
@@ -382,6 +383,60 @@ deduplicates by public key:
 Implementation:
 - `logos-messaging-a2a-core::PresenceAnnouncement` — wire type + signing.
 - `logos-messaging-a2a-node::presence::{PeerInfo, PeerMap}` — live peer tracking.
+
+## Task Delegation
+
+An orchestrator agent decomposes a parent task into subtasks and forwards
+each subtask to a peer chosen from the live `PeerMap`.
+
+```
+Orchestrator               PeerMap                  Worker A / Worker B
+  │                           │                           │
+  │── DelegationRequest ─────▶│                           │
+  │   { parent_task_id,       │  strategy:                │
+  │     subtask_text,         │  FirstAvailable           │
+  │     strategy,             │  CapabilityMatch("code")  │
+  │     timeout_secs }        │  BroadcastCollect         │
+  │                           │                           │
+  │   select peer(s) ◀───────│                           │
+  │                           │                           │
+  │── Task(subtask) ─────────┼──────────────────────────▶│
+  │   via transport.publish   │                           │
+  │                           │                           │
+  │   poll_tasks() loop       │                           │
+  │   (up to timeout_secs)    │                           │
+  │                           │                           │
+  │◀── DelegationResult ─────┼───────────────────────────│
+  │   { success, result_text, │                           │
+  │     agent_id, error }     │                           │
+```
+
+### Key types
+
+```
+DelegationStrategy (tagged enum)
+├── FirstAvailable                pick any live peer
+├── CapabilityMatch { capability } pick a peer with matching capability
+└── BroadcastCollect              send to all, collect every response
+
+DelegationRequest
+├── parent_task_id: String
+├── subtask_text: String
+├── strategy: DelegationStrategy
+└── timeout_secs: u64             (0 = default 30s)
+
+DelegationResult
+├── parent_task_id: String
+├── subtask_id: String
+├── agent_id: String              pubkey of the worker
+├── result_text: Option<String>
+├── success: bool
+└── error: Option<String>
+```
+
+Implementation:
+- `logos-messaging-a2a-core::delegation` — wire types.
+- `logos-messaging-a2a-node::delegation` — `delegate_task()` and `delegate_broadcast()`.
 
 ## MCP Bridge Architecture
 
