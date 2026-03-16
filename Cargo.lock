@@ -2415,6 +2415,7 @@ dependencies = [
  "logos-messaging-a2a-crypto",
  "logos-messaging-a2a-node",
  "logos-messaging-a2a-transport",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
