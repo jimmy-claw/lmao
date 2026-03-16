@@ -21,6 +21,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub encrypt: bool,
 
+    /// Output structured JSON instead of human-readable text.
+    /// When set, JSON goes to stdout and informational messages go to stderr.
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -830,5 +835,86 @@ mod tests {
             } => {}
             _ => panic!("expected Session List"),
         }
+    }
+
+    // ── Global --json flag ──
+
+    #[test]
+    fn json_flag_defaults_to_false() {
+        let cli = try_parse(&["cli", "agent", "discover"]).unwrap();
+        assert!(!cli.json);
+    }
+
+    #[test]
+    fn json_flag_before_subcommand() {
+        let cli = try_parse(&["cli", "--json", "agent", "discover"]).unwrap();
+        assert!(cli.json);
+    }
+
+    #[test]
+    fn json_flag_after_subcommand() {
+        let cli = try_parse(&["cli", "agent", "discover", "--json"]).unwrap();
+        assert!(cli.json);
+    }
+
+    #[test]
+    fn json_flag_with_task_send() {
+        let cli = try_parse(&[
+            "cli", "--json", "task", "send", "--to", "abc", "--text", "hi",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Task {
+                action: TaskAction::Send { to, text },
+            } => {
+                assert_eq!(to, "abc");
+                assert_eq!(text, "hi");
+            }
+            _ => panic!("expected Task Send"),
+        }
+    }
+
+    #[test]
+    fn json_flag_with_presence_discover() {
+        let cli = try_parse(&["cli", "--json", "presence", "discover"]).unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Presence {
+                action: PresenceAction::Discover { .. },
+            } => {}
+            _ => panic!("expected Presence Discover"),
+        }
+    }
+
+    #[test]
+    fn json_flag_with_session_list() {
+        let cli = try_parse(&["cli", "--json", "session", "list"]).unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Session {
+                action: SessionAction::List,
+            } => {}
+            _ => panic!("expected Session List"),
+        }
+    }
+
+    #[test]
+    fn json_flag_combined_with_other_globals() {
+        let cli = try_parse(&[
+            "cli",
+            "--json",
+            "--encrypt",
+            "--keyfile",
+            "/tmp/k.key",
+            "agent",
+            "run",
+            "--name",
+            "test",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        assert!(cli.encrypt);
+        assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/k.key")));
     }
 }
