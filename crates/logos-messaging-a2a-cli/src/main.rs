@@ -1,6 +1,7 @@
 mod agent;
 mod cli;
 mod common;
+mod health;
 mod presence;
 mod session;
 mod task;
@@ -33,5 +34,6 @@ async fn main() -> Result<()> {
         Commands::Task { action } => task::handle(action, transport, &identity, json).await,
         Commands::Presence { action } => presence::handle(action, transport, &identity, json).await,
         Commands::Session { action } => session::handle(action, transport, &identity, json).await,
+        Commands::Health => health::handle(&cli.waku, json).await,
     }
 }

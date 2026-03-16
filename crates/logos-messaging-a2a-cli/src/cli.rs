@@ -52,6 +52,8 @@ pub enum Commands {
         #[command(subcommand)]
         action: SessionAction,
     },
+    /// Check Waku node connectivity and health
+    Health,
 }
 
 #[derive(Debug, Subcommand)]
@@ -896,6 +898,37 @@ mod tests {
                 action: SessionAction::List,
             } => {}
             _ => panic!("expected Session List"),
+        }
+    }
+
+    // ── Health ──
+
+    #[test]
+    fn health_parses() {
+        let cli = try_parse(&["cli", "health"]).unwrap();
+        match cli.command {
+            Commands::Health => {}
+            _ => panic!("expected Health"),
+        }
+    }
+
+    #[test]
+    fn health_with_custom_waku_url() {
+        let cli = try_parse(&["cli", "--waku", "http://node:9090", "health"]).unwrap();
+        assert_eq!(cli.waku, "http://node:9090");
+        match cli.command {
+            Commands::Health => {}
+            _ => panic!("expected Health"),
+        }
+    }
+
+    #[test]
+    fn health_with_json_flag() {
+        let cli = try_parse(&["cli", "--json", "health"]).unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Health => {}
+            _ => panic!("expected Health"),
         }
     }
 

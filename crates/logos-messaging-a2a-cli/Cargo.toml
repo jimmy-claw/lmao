@@ -19,6 +19,7 @@ clap = { workspace = true }
 k256 = { workspace = true }
 hex = { workspace = true }
 anyhow = { workspace = true }
+reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
