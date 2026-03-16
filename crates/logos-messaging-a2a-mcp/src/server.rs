@@ -571,6 +571,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_to_agent_success_roundtrip() {
+        let transport = InMemoryTransport::new();
+        let fast = || logos_messaging_a2a_transport::sds::ChannelConfig {
+            ack_timeout: std::time::Duration::from_millis(1),
+            max_retries: 0,
+            ..Default::default()
+        };
+
+        // Create echo agent on the shared transport.
+        let echo = WakuA2ANode::with_config(
+            "echo-agent",
+            "Echoes messages",
+            vec!["echo".into()],
+            transport.clone(),
+            fast(),
+        );
+        let echo_pubkey = echo.pubkey().to_string();
+
+        // Echo agent subscribes to its task topic (lazy init).
+        let _ = echo.poll_tasks().await.unwrap();
+
+        // Create bridge with fast SDS config so send_reliable doesn't block.
+        let bridge_node = WakuA2ANode::with_config(
+            "mcp-bridge",
+            "MCP bridge",
+            vec!["mcp-bridge".into()],
+            transport.clone(),
+            fast(),
+        );
+        let bridge = LogosA2ABridge::from_node(bridge_node, 30);
+
+        // Cache the agent card so send_to_agent can look it up.
+        {
+            let mut agents = bridge.agents.write().await;
+            agents.push(make_card(
+                "echo-agent",
+                "Echoes messages",
+                &["echo"],
+                &echo_pubkey,
+            ));
+        }
+
+        // Background: echo agent polls for the task and responds.
+        let echo_handle = tokio::spawn(async move {
+            // Wait briefly for send_to_agent to publish the task.
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            let tasks = echo.poll_tasks().await.unwrap();
+            assert!(!tasks.is_empty(), "echo agent should receive the task");
+            echo.respond(&tasks[0], "echo: hello back").await.unwrap();
+        });
+
+        // send_to_agent sends the task, then polls until the response arrives.
+        let result = bridge
+            .send_to_agent(Parameters(SendToAgentInput {
+                agent_name: "echo-agent".to_string(),
+                message: "hello agent".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        echo_handle.await.unwrap();
+
+        let text = result_text(&result);
+        assert!(text.contains("Response from 'echo-agent'"));
+        assert!(text.contains("echo: hello back"));
+    }
+
+    #[tokio::test]
     async fn send_to_agent_suggests_discover_on_miss() {
         let bridge = make_test_bridge(InMemoryTransport::new());
         let err = bridge
@@ -978,6 +1046,72 @@ mod tests {
         assert!(output.contains("abc..."));
     }
 
+    #[test]
+    fn format_peer_entry_empty_capabilities() {
+        let info = PeerInfo {
+            name: "no-caps".to_string(),
+            capabilities: vec![],
+            waku_topic: "/a2a/tasks/nocaps".to_string(),
+            ttl_secs: 120,
+            last_seen: 0,
+        };
+
+        let output = format_peer_entry(1, "abcdef1234567890abcdef", &info);
+        assert!(output.contains("**no-caps** — []"));
+        assert!(output.contains("TTL: 120s"));
+    }
+
+    #[test]
+    fn format_peer_entry_many_capabilities() {
+        let info = PeerInfo {
+            name: "multi-cap".to_string(),
+            capabilities: vec![
+                "search".to_string(),
+                "summarize".to_string(),
+                "translate".to_string(),
+                "code".to_string(),
+            ],
+            waku_topic: "/a2a/tasks/multi".to_string(),
+            ttl_secs: 600,
+            last_seen: 0,
+        };
+
+        let output = format_peer_entry(3, "abcdef1234567890abcdef", &info);
+        assert!(output.contains("3. **multi-cap**"));
+        assert!(output.contains("search, summarize, translate, code"));
+        assert!(output.contains("TTL: 600s"));
+    }
+
+    // ── Clone ──
+
+    #[test]
+    fn bridge_clone_shares_state() {
+        let bridge = make_test_bridge(InMemoryTransport::new());
+        let cloned = bridge.clone();
+
+        // Arc pointers should be the same (shared state).
+        assert!(Arc::ptr_eq(&bridge.node, &cloned.node));
+        assert!(Arc::ptr_eq(&bridge.agents, &cloned.agents));
+        assert_eq!(bridge.timeout_secs, cloned.timeout_secs);
+    }
+
+    #[tokio::test]
+    async fn bridge_clone_reflects_agent_cache_mutations() {
+        let bridge = make_test_bridge(InMemoryTransport::new());
+        let cloned = bridge.clone();
+
+        // Mutate cache on original.
+        {
+            let mut agents = bridge.agents.write().await;
+            agents.push(make_card("shared", "Shared agent", &["a"], "aabb"));
+        }
+
+        // Clone should see the same mutation.
+        let cached = cloned.agents.read().await;
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].name, "shared");
+    }
+
     // ── discover_agents description says legacy ──
 
     #[tokio::test]
@@ -992,5 +1126,33 @@ mod tests {
             desc.contains("legacy"),
             "discover_agents description should mention 'legacy': {desc}"
         );
+    }
+
+    // ── Tool router lists all five tools ──
+
+    #[test]
+    fn tool_router_lists_all_five_tools() {
+        let bridge = make_test_bridge(InMemoryTransport::new());
+        let tools = bridge.tool_router.list_all();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+
+        assert!(
+            names.contains(&"discover_agents"),
+            "missing discover_agents"
+        );
+        assert!(
+            names.contains(&"discover_agents_presence"),
+            "missing discover_agents_presence"
+        );
+        assert!(names.contains(&"send_to_agent"), "missing send_to_agent");
+        assert!(
+            names.contains(&"get_agent_status"),
+            "missing get_agent_status"
+        );
+        assert!(
+            names.contains(&"list_cached_agents"),
+            "missing list_cached_agents"
+        );
+        assert_eq!(names.len(), 5, "expected exactly 5 tools, got {names:?}");
     }
 }
