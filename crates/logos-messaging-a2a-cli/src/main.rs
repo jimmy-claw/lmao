@@ -22,15 +22,16 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let transport = LogosMessagingTransport::new(&cli.waku);
+    let json = cli.json;
     let identity = IdentityConfig {
         keyfile: cli.keyfile,
         encrypt: cli.encrypt,
     };
 
     match cli.command {
-        Commands::Agent { action } => agent::handle(action, transport, &identity).await,
-        Commands::Task { action } => task::handle(action, transport, &identity).await,
-        Commands::Presence { action } => presence::handle(action, transport, &identity).await,
-        Commands::Session { action } => session::handle(action, transport, &identity).await,
+        Commands::Agent { action } => agent::handle(action, transport, &identity, json).await,
+        Commands::Task { action } => task::handle(action, transport, &identity, json).await,
+        Commands::Presence { action } => presence::handle(action, transport, &identity, json).await,
+        Commands::Session { action } => session::handle(action, transport, &identity, json).await,
     }
 }

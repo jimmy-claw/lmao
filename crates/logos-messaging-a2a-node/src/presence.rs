@@ -4,6 +4,7 @@
 //! listen, build a [`PeerMap`], and query it by capability when they need
 //! to route a task to an agent they haven't talked to before.
 
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use logos_messaging_a2a_core::PresenceAnnouncement;
 
 /// Information about a live peer, derived from its presence announcement.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PeerInfo {
     /// Human-readable name.
     pub name: String,

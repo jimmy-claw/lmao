@@ -9,36 +9,88 @@ pub async fn handle(
     action: TaskAction,
     transport: LogosMessagingTransport,
     identity: &IdentityConfig,
+    json: bool,
 ) -> Result<()> {
     match action {
         TaskAction::Send { to, text } => {
             let node = build_node("cli-sender", "CLI client", vec![], transport, identity)?;
-            println!("Sending task to {}...", &to[..12.min(to.len())]);
-            println!("From pubkey: {}", node.pubkey());
+            if !json {
+                println!("Sending task to {}...", &to[..12.min(to.len())]);
+                println!("From pubkey: {}", node.pubkey());
+            }
             let task = Task::new(node.pubkey(), &to, &text);
             match node.send_task(&task).await {
                 Ok(acked) => {
-                    println!("Task ID: {}", task.id);
-                    if acked {
-                        println!("Status: ACKed by recipient");
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&serde_json::json!({
+                                "task_id": task.id,
+                                "from": node.pubkey(),
+                                "to": to,
+                                "status": if acked { "acked" } else { "sent" },
+                            }))?
+                        );
                     } else {
-                        println!("Status: Sent (no ACK — recipient may be offline)");
+                        println!("Task ID: {}", task.id);
+                        if acked {
+                            println!("Status: ACKed by recipient");
+                        } else {
+                            println!("Status: Sent (no ACK — recipient may be offline)");
+                        }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to send task: {}", e);
-                    println!("Task ID: {} (failed)", task.id);
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&serde_json::json!({
+                                "task_id": task.id,
+                                "from": node.pubkey(),
+                                "to": to,
+                                "status": "failed",
+                                "error": e.to_string(),
+                            }))?
+                        );
+                    } else {
+                        eprintln!("Failed to send task: {}", e);
+                        println!("Task ID: {} (failed)", task.id);
+                    }
                 }
             }
         }
         TaskAction::Status { id } => {
             let node = build_node("cli-poller", "CLI client", vec![], transport, identity)?;
-            println!("Polling for task {} responses...", id);
-            println!("Listening as: {}", node.pubkey());
+            if !json {
+                println!("Polling for task {} responses...", id);
+                println!("Listening as: {}", node.pubkey());
+            }
             match node.poll_tasks().await {
                 Ok(tasks) => {
                     let found: Vec<_> = tasks.iter().filter(|t| t.id == id).collect();
-                    if found.is_empty() {
+                    if json {
+                        let results: Vec<_> = found
+                            .iter()
+                            .map(|t| {
+                                let mut obj = serde_json::json!({
+                                    "task_id": t.id,
+                                    "state": format!("{:?}", t.state),
+                                });
+                                if let Some(text) = t.result_text() {
+                                    obj["result"] = serde_json::json!(text);
+                                }
+                                obj
+                            })
+                            .collect();
+                        println!(
+                            "{}",
+                            serde_json::to_string(&serde_json::json!({
+                                "task_id": id,
+                                "listener": node.pubkey(),
+                                "results": results,
+                            }))?
+                        );
+                    } else if found.is_empty() {
                         println!("No response yet for task {}", id);
                     } else {
                         for task in found {
@@ -51,16 +103,28 @@ pub async fn handle(
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to poll: {}", e);
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&serde_json::json!({
+                                "task_id": id,
+                                "error": e.to_string(),
+                            }))?
+                        );
+                    } else {
+                        eprintln!("Failed to poll: {}", e);
+                    }
                 }
             }
         }
         TaskAction::Stream { id, timeout } => {
             let node = build_node("cli-stream", "CLI client", vec![], transport, identity)?;
-            println!(
-                "Following stream for task {} (timeout {}s)...\n",
-                id, timeout
-            );
+            if !json {
+                println!(
+                    "Following stream for task {} (timeout {}s)...\n",
+                    id, timeout
+                );
+            }
 
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
             let mut last_index: Option<u32> = None;
@@ -70,13 +134,37 @@ pub async fn handle(
                     Ok(chunks) => {
                         for chunk in &chunks {
                             if last_index.is_none() || chunk.chunk_index > last_index.unwrap() {
-                                print!("{}", chunk.text);
+                                if json {
+                                    println!(
+                                        "{}",
+                                        serde_json::to_string(&serde_json::json!({
+                                            "event": "chunk",
+                                            "task_id": id,
+                                            "chunk_index": chunk.chunk_index,
+                                            "text": chunk.text,
+                                            "is_final": chunk.is_final,
+                                        }))?
+                                    );
+                                } else {
+                                    print!("{}", chunk.text);
+                                }
                                 last_index = Some(chunk.chunk_index);
                             }
                         }
                         if chunks.iter().any(|c| c.is_final) {
-                            println!();
-                            println!("\n--- Stream complete ({} chunks) ---", chunks.len());
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string(&serde_json::json!({
+                                        "event": "stream_complete",
+                                        "task_id": id,
+                                        "total_chunks": chunks.len(),
+                                    }))?
+                                );
+                            } else {
+                                println!();
+                                println!("\n--- Stream complete ({} chunks) ---", chunks.len());
+                            }
                             break;
                         }
                     }
@@ -88,7 +176,18 @@ pub async fn handle(
             }
 
             if last_index.is_none() {
-                println!("No stream chunks received for task {}", id);
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&serde_json::json!({
+                            "event": "stream_timeout",
+                            "task_id": id,
+                            "total_chunks": 0,
+                        }))?
+                    );
+                } else {
+                    println!("No stream chunks received for task {}", id);
+                }
             }
         }
         TaskAction::Delegate {
@@ -107,27 +206,62 @@ pub async fn handle(
                 transport,
                 identity,
             )?;
-            println!("From pubkey: {}", node.pubkey());
+            if !json {
+                println!("From pubkey: {}", node.pubkey());
+            }
 
             // Build strategy from flags
             let strategy = if let Some(ref agent_key) = to {
                 // Direct delegation — send task directly, skip presence lookup
-                println!(
-                    "Delegating directly to {}...",
-                    &agent_key[..12.min(agent_key.len())]
-                );
+                if !json {
+                    println!(
+                        "Delegating directly to {}...",
+                        &agent_key[..12.min(agent_key.len())]
+                    );
+                }
                 let task = Task::new(node.pubkey(), agent_key, &text);
-                println!("Subtask ID: {}", task.id);
+                if !json {
+                    println!("Subtask ID: {}", task.id);
+                }
                 match node.send_task(&task).await {
                     Ok(acked) => {
-                        if acked {
-                            println!("Status: ACKed by recipient");
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&serde_json::json!({
+                                    "subtask_id": task.id,
+                                    "from": node.pubkey(),
+                                    "to": agent_key,
+                                    "parent_id": parent_id,
+                                    "status": if acked { "acked" } else { "sent" },
+                                }))?
+                            );
                         } else {
-                            println!("Status: Sent (no ACK)");
+                            if acked {
+                                println!("Status: ACKed by recipient");
+                            } else {
+                                println!("Status: Sent (no ACK)");
+                            }
+                            println!("Parent task: {}", parent_id);
                         }
-                        println!("Parent task: {}", parent_id);
                     }
-                    Err(e) => eprintln!("Failed to delegate: {}", e),
+                    Err(e) => {
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&serde_json::json!({
+                                    "subtask_id": task.id,
+                                    "from": node.pubkey(),
+                                    "to": agent_key,
+                                    "parent_id": parent_id,
+                                    "status": "failed",
+                                    "error": e.to_string(),
+                                }))?
+                            );
+                        } else {
+                            eprintln!("Failed to delegate: {}", e);
+                        }
+                    }
                 }
                 return Ok(());
             } else if let Some(ref s) = strategy {
@@ -155,7 +289,9 @@ pub async fn handle(
             };
 
             // Presence-based delegation
-            println!("Discovering peers via presence...");
+            if !json {
+                println!("Discovering peers via presence...");
+            }
             let poll_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
             while tokio::time::Instant::now() < poll_deadline {
                 node.poll_presence().await?;
@@ -165,7 +301,9 @@ pub async fn handle(
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
             let live = node.peers().all_live();
-            println!("Found {} live peer(s)", live.len());
+            if !json {
+                println!("Found {} live peer(s)", live.len());
+            }
 
             let request = DelegationRequest {
                 parent_task_id: parent_id.clone(),
@@ -175,42 +313,165 @@ pub async fn handle(
             };
 
             if broadcast {
-                println!("Broadcasting to all matching peers...");
+                if !json {
+                    println!("Broadcasting to all matching peers...");
+                }
                 match node.delegate_broadcast(&request).await {
                     Ok(results) => {
-                        println!("Received {} result(s):", results.len());
-                        for r in &results {
-                            let status = if r.success { "OK" } else { "FAIL" };
-                            let agent = &r.agent_id[..12.min(r.agent_id.len())];
-                            println!("  [{status}] agent={agent} subtask={}", r.subtask_id);
-                            if let Some(ref text) = r.result_text {
-                                println!("    Result: {text}");
-                            }
-                            if let Some(ref err) = r.error {
-                                println!("    Error: {err}");
+                        if json {
+                            let items: Vec<_> = results
+                                .iter()
+                                .map(|r| {
+                                    serde_json::json!({
+                                        "subtask_id": r.subtask_id,
+                                        "agent_id": r.agent_id,
+                                        "success": r.success,
+                                        "result_text": r.result_text,
+                                        "error": r.error,
+                                    })
+                                })
+                                .collect();
+                            println!(
+                                "{}",
+                                serde_json::to_string(&serde_json::json!({
+                                    "parent_id": parent_id,
+                                    "broadcast": true,
+                                    "results": items,
+                                }))?
+                            );
+                        } else {
+                            println!("Received {} result(s):", results.len());
+                            for r in &results {
+                                let status = if r.success { "OK" } else { "FAIL" };
+                                let agent = &r.agent_id[..12.min(r.agent_id.len())];
+                                println!("  [{status}] agent={agent} subtask={}", r.subtask_id);
+                                if let Some(ref text) = r.result_text {
+                                    println!("    Result: {text}");
+                                }
+                                if let Some(ref err) = r.error {
+                                    println!("    Error: {err}");
+                                }
                             }
                         }
                     }
-                    Err(e) => eprintln!("Broadcast delegation failed: {}", e),
+                    Err(e) => {
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&serde_json::json!({
+                                    "parent_id": parent_id,
+                                    "broadcast": true,
+                                    "error": e.to_string(),
+                                }))?
+                            );
+                        } else {
+                            eprintln!("Broadcast delegation failed: {}", e);
+                        }
+                    }
                 }
             } else {
-                println!("Delegating to single peer...");
+                if !json {
+                    println!("Delegating to single peer...");
+                }
                 match node.delegate_task(&request).await {
                     Ok(r) => {
-                        let status = if r.success { "OK" } else { "FAIL" };
-                        let agent = &r.agent_id[..12.min(r.agent_id.len())];
-                        println!("[{status}] agent={agent} subtask={}", r.subtask_id);
-                        if let Some(ref text) = r.result_text {
-                            println!("Result: {text}");
-                        }
-                        if let Some(ref err) = r.error {
-                            println!("Error: {err}");
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&serde_json::json!({
+                                    "parent_id": parent_id,
+                                    "subtask_id": r.subtask_id,
+                                    "agent_id": r.agent_id,
+                                    "success": r.success,
+                                    "result_text": r.result_text,
+                                    "error": r.error,
+                                }))?
+                            );
+                        } else {
+                            let status = if r.success { "OK" } else { "FAIL" };
+                            let agent = &r.agent_id[..12.min(r.agent_id.len())];
+                            println!("[{status}] agent={agent} subtask={}", r.subtask_id);
+                            if let Some(ref text) = r.result_text {
+                                println!("Result: {text}");
+                            }
+                            if let Some(ref err) = r.error {
+                                println!("Error: {err}");
+                            }
                         }
                     }
-                    Err(e) => eprintln!("Delegation failed: {}", e),
+                    Err(e) => {
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&serde_json::json!({
+                                    "parent_id": parent_id,
+                                    "error": e.to_string(),
+                                }))?
+                            );
+                        } else {
+                            eprintln!("Delegation failed: {}", e);
+                        }
+                    }
                 }
             }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn task_send_json_output_is_parseable() {
+        // Mirrors the JSON structure produced by `task send --json`
+        let output = serde_json::to_string(&serde_json::json!({
+            "task_id": "550e8400-e29b-41d4-a716-446655440000",
+            "from": "02aabbcc",
+            "to": "02ddeeff",
+            "status": "acked",
+        }))
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["status"], "acked");
+        assert!(parsed["task_id"].is_string());
+        assert!(parsed["from"].is_string());
+        assert!(parsed["to"].is_string());
+    }
+
+    #[test]
+    fn task_status_json_output_is_parseable() {
+        let output = serde_json::to_string(&serde_json::json!({
+            "task_id": "task-42",
+            "listener": "02aabbcc",
+            "results": [
+                {
+                    "task_id": "task-42",
+                    "state": "Completed",
+                    "result": "Echo: hello",
+                }
+            ],
+        }))
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["task_id"], "task-42");
+        let results = parsed["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["state"], "Completed");
+    }
+
+    #[test]
+    fn stream_chunk_json_output_is_parseable() {
+        let output = serde_json::to_string(&serde_json::json!({
+            "event": "chunk",
+            "task_id": "task-42",
+            "chunk_index": 0,
+            "text": "Hello ",
+            "is_final": false,
+        }))
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["event"], "chunk");
+        assert_eq!(parsed["chunk_index"], 0);
+        assert_eq!(parsed["is_final"], false);
+    }
 }
