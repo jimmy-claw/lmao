@@ -162,8 +162,6 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn discover_json_output_is_parseable() {
         // Mirrors the JSON structure produced by `agent discover --json`

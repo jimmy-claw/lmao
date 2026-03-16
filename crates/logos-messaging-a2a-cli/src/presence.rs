@@ -25,7 +25,7 @@ fn peer_to_json(
         "capabilities": info.capabilities,
         "pubkey": agent_id,
         "waku_topic": info.waku_topic,
-        "last_seen": info.last_seen.to_string(),
+        "last_seen": info.last_seen,
         "ttl_secs": info.ttl_secs,
         "expired": info.is_expired(),
     })
@@ -317,7 +317,7 @@ mod tests {
             "capabilities": ["text"],
             "pubkey": "02aabb",
             "waku_topic": "/waku/2/topic/proto",
-            "last_seen": "1700000000",
+            "last_seen": 1700000000,
             "ttl_secs": 300,
             "expired": false,
         })];
