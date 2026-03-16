@@ -20,18 +20,23 @@ use x25519_dalek::{PublicKey, StaticSecret};
 /// Errors that can occur during cryptographic operations.
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
+    /// The input string is not valid hexadecimal.
     #[error("invalid hex: {0}")]
     Hex(#[from] hex::FromHexError),
 
+    /// A key has the wrong byte length (e.g. not 32 bytes for X25519).
     #[error("{0}")]
     InvalidKeyLength(String),
 
+    /// An error from the ChaCha20-Poly1305 AEAD cipher.
     #[error("cipher error: {0}")]
     Cipher(String),
 
+    /// The nonce field is not valid base64.
     #[error("invalid base64 nonce")]
     InvalidBase64Nonce(#[source] base64::DecodeError),
 
+    /// The ciphertext field is not valid base64.
     #[error("invalid base64 ciphertext")]
     InvalidBase64Ciphertext(#[source] base64::DecodeError),
 }

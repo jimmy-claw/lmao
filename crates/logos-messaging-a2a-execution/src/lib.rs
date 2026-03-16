@@ -16,9 +16,11 @@ use std::fmt;
 /// Errors that can occur during execution backend operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionError {
+    /// An error returned by the JSON-RPC provider.
     #[error("RPC error: {0}")]
     Rpc(String),
 
+    /// A catch-all error with a freeform message.
     #[error("{0}")]
     Other(String),
 }

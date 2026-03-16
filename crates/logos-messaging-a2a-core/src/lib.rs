@@ -16,12 +16,18 @@
 //! - [`registry`] — Persistent agent registry trait and in-memory implementation.
 //! - [`retry`] — Exponential-backoff retry configuration.
 
+/// Agent identity and capability advertisement types.
 pub mod agent;
+/// Multi-agent task delegation types and strategies.
 pub mod delegation;
+/// Wire envelope for all Waku messages.
 pub mod envelope;
+/// Signed presence announcements for ephemeral peer discovery.
 pub mod presence;
 pub mod registry;
+/// Exponential-backoff retry configuration.
 pub mod retry;
+/// Task lifecycle types and message parts.
 pub mod task;
 pub mod topics;
 
