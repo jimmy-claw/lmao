@@ -1,9 +1,10 @@
 //! Multi-turn conversation sessions between agents.
 
+use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A multi-turn conversation session between two agents.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Session {
     /// Unique session identifier (UUID v4).
     pub id: String,

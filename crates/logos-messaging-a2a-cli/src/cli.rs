@@ -42,6 +42,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: PresenceAction,
     },
+    /// Session management
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -153,6 +158,18 @@ pub enum PresenceAction {
         /// How long to listen in one-shot mode (seconds)
         #[arg(long, default_value = "10")]
         timeout: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionAction {
+    /// List all active sessions
+    List,
+    /// Show details of a specific session
+    Show {
+        /// Session ID (UUID)
+        #[arg(long)]
+        id: String,
     },
 }
 
@@ -751,5 +768,67 @@ mod tests {
     fn task_delegate_missing_text() {
         let err = try_parse(&["cli", "task", "delegate", "--to", "02ab"]).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    // ── Session List ──
+
+    #[test]
+    fn session_list_parses() {
+        let cli = try_parse(&["cli", "session", "list"]).unwrap();
+        match cli.command {
+            Commands::Session {
+                action: SessionAction::List,
+            } => {}
+            _ => panic!("expected Session List"),
+        }
+    }
+
+    // ── Session Show ──
+
+    #[test]
+    fn session_show_parses() {
+        let cli = try_parse(&[
+            "cli",
+            "session",
+            "show",
+            "--id",
+            "550e8400-e29b-41d4-a716-446655440000",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Session {
+                action: SessionAction::Show { id },
+            } => {
+                assert_eq!(id, "550e8400-e29b-41d4-a716-446655440000");
+            }
+            _ => panic!("expected Session Show"),
+        }
+    }
+
+    #[test]
+    fn session_show_missing_id() {
+        let err = try_parse(&["cli", "session", "show"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn session_list_with_global_flags() {
+        let cli = try_parse(&[
+            "cli",
+            "--keyfile",
+            "/tmp/s.key",
+            "--encrypt",
+            "session",
+            "list",
+        ])
+        .unwrap();
+        assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/s.key")));
+        assert!(cli.encrypt);
+        match cli.command {
+            Commands::Session {
+                action: SessionAction::List,
+            } => {}
+            _ => panic!("expected Session List"),
+        }
     }
 }

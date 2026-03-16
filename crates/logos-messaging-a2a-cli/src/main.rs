@@ -2,6 +2,7 @@ mod agent;
 mod cli;
 mod common;
 mod presence;
+mod session;
 mod task;
 
 use anyhow::Result;
@@ -30,5 +31,6 @@ async fn main() -> Result<()> {
         Commands::Agent { action } => agent::handle(action, transport, &identity).await,
         Commands::Task { action } => task::handle(action, transport, &identity).await,
         Commands::Presence { action } => presence::handle(action, transport, &identity).await,
+        Commands::Session { action } => session::handle(action, transport, &identity).await,
     }
 }
