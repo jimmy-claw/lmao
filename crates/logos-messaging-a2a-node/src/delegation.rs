@@ -1,7 +1,6 @@
 //! Multi-agent task delegation: decompose tasks into subtasks and forward
 //! them to capable peers discovered via presence.
 
-use anyhow::{Context, Result};
 use logos_messaging_a2a_core::{
     topics, A2AEnvelope, DelegationRequest, DelegationResult, DelegationStrategy, Task,
 };
@@ -9,7 +8,7 @@ use logos_messaging_a2a_transport::Transport;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::WakuA2ANode;
+use crate::{NodeError, Result, WakuA2ANode};
 
 /// Default timeout for delegation when none is specified (30 seconds).
 const DEFAULT_DELEGATION_TIMEOUT_SECS: u64 = 30;
@@ -31,30 +30,24 @@ impl<T: Transport> WakuA2ANode<T> {
         let peer_id = match &request.strategy {
             DelegationStrategy::FirstAvailable => {
                 let peers = self.peers().all_live();
-                peers
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .next()
-                    .context("no live peers available for delegation")?
+                peers.into_iter().map(|(id, _)| id).next().ok_or_else(|| {
+                    NodeError::Other("no live peers available for delegation".into())
+                })?
             }
             DelegationStrategy::CapabilityMatch { capability } => {
                 let peers = self.find_peers_by_capability(capability);
-                peers
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .next()
-                    .with_context(|| {
-                        format!("no live peers with capability '{capability}' for delegation")
-                    })?
+                peers.into_iter().map(|(id, _)| id).next().ok_or_else(|| {
+                    NodeError::Other(format!(
+                        "no live peers with capability '{capability}' for delegation"
+                    ))
+                })?
             }
             DelegationStrategy::BroadcastCollect => {
                 // For single delegation, broadcast acts like first-available
                 let peers = self.peers().all_live();
-                peers
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .next()
-                    .context("no live peers available for broadcast delegation")?
+                peers.into_iter().map(|(id, _)| id).next().ok_or_else(|| {
+                    NodeError::Other("no live peers available for broadcast delegation".into())
+                })?
             }
             DelegationStrategy::RoundRobin => {
                 let peers: Vec<String> = self
@@ -64,7 +57,9 @@ impl<T: Transport> WakuA2ANode<T> {
                     .map(|(id, _)| id)
                     .collect();
                 if peers.is_empty() {
-                    anyhow::bail!("no live peers available for round-robin delegation");
+                    return Err(NodeError::Other(
+                        "no live peers available for round-robin delegation".into(),
+                    ));
                 }
                 let idx = self.round_robin_counter.fetch_add(1, Ordering::Relaxed) % peers.len();
                 peers.into_iter().nth(idx).unwrap()
@@ -104,7 +99,9 @@ impl<T: Transport> WakuA2ANode<T> {
         };
 
         if peer_ids.is_empty() {
-            anyhow::bail!("no live peers available for broadcast delegation");
+            return Err(NodeError::Other(
+                "no live peers available for broadcast delegation".into(),
+            ));
         }
 
         let mut results = Vec::new();
@@ -143,22 +140,14 @@ impl<T: Transport> WakuA2ANode<T> {
         // since delegation already polls for the response with its own timeout.
         let topic = topics::task_topic(peer_id);
         let envelope = A2AEnvelope::Task(task);
-        let payload =
-            serde_json::to_vec(&envelope).context("failed to serialize delegated subtask")?;
-        self.channel()
-            .transport()
-            .publish(&topic, &payload)
-            .await
-            .context("failed to send delegated subtask")?;
+        let payload = serde_json::to_vec(&envelope)?;
+        self.channel().transport().publish(&topic, &payload).await?;
 
         // Poll for response with timeout
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
 
         while tokio::time::Instant::now() < deadline {
-            let tasks = self
-                .poll_tasks()
-                .await
-                .context("failed to poll for delegation response")?;
+            let tasks = self.poll_tasks().await?;
             for received in &tasks {
                 if received.id == subtask_id {
                     return Ok(DelegationResult {

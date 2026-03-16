@@ -13,7 +13,7 @@
 //! Reference: <https://forum.research.logos.co/t/introducing-the-reliable-channel-api/580>
 
 use crate::Transport;
-use anyhow::{Context, Result};
+use crate::{Result, TransportError};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -222,10 +222,9 @@ impl<T: Transport> MessageChannel<T> {
 
         // Serialize and publish
         let encoded = serde_json::to_vec(&SdsMessage::Content(msg.clone()))?;
-        self.transport
-            .publish(topic, &encoded)
-            .await
-            .context("SDS: failed to publish content message")?;
+        self.transport.publish(topic, &encoded).await.map_err(|e| {
+            TransportError::Transport(format!("SDS: failed to publish content message: {}", e))
+        })?;
 
         // Record in local state
         self.bloom.set(&message_id);
@@ -277,7 +276,7 @@ impl<T: Transport> MessageChannel<T> {
             self.transport
                 .publish(topic, &encoded)
                 .await
-                .context("SDS: publish failed")?;
+                .map_err(|e| TransportError::Transport(format!("SDS: publish failed: {}", e)))?;
 
             match tokio::time::timeout(self.config.ack_timeout, ack_rx.recv()).await {
                 Ok(Some(ack_data)) => {

@@ -1,9 +1,8 @@
-use anyhow::{Context, Result};
 use logos_messaging_a2a_core::Task;
 use logos_messaging_a2a_execution::AgentId;
 use logos_messaging_a2a_transport::Transport;
 
-use crate::WakuA2ANode;
+use crate::{Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
     /// If auto-pay is enabled, call `backend.pay()` and attach proof to the task.
@@ -14,8 +13,7 @@ impl<T: Transport> WakuA2ANode<T> {
                 let tx_hash = pay_cfg
                     .backend
                     .pay(&recipient, pay_cfg.auto_pay_amount)
-                    .await
-                    .context("auto-pay failed")?;
+                    .await?;
                 let mut task = task.clone();
                 task.payment_tx = Some(tx_hash.to_string());
                 task.payment_amount = Some(pay_cfg.auto_pay_amount);
@@ -1003,8 +1001,11 @@ mod tests {
         let result = node.maybe_auto_pay(&task).await;
         assert!(result.is_err(), "backend.pay() failure should propagate");
         assert!(
-            result.unwrap_err().to_string().contains("auto-pay failed"),
-            "error should contain context"
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("insufficient funds"),
+            "error should contain backend failure reason"
         );
     }
 }

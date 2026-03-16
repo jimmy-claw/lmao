@@ -17,7 +17,34 @@ pub mod storage;
 mod streaming;
 mod tasks;
 
-use anyhow::{Context, Result};
+/// Errors that can occur in node operations.
+#[derive(Debug, thiserror::Error)]
+pub enum NodeError {
+    #[error("transport error: {0}")]
+    Transport(#[from] logos_messaging_a2a_transport::TransportError),
+
+    #[error("crypto error: {0}")]
+    Crypto(#[from] logos_messaging_a2a_crypto::CryptoError),
+
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+
+    #[error("execution error: {0}")]
+    Execution(#[from] logos_messaging_a2a_execution::ExecutionError),
+
+    #[error("presence error: {0}")]
+    Presence(#[from] logos_messaging_a2a_core::PresenceError),
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("{0}")]
+    Other(String),
+}
+
+/// Alias for results returned by node operations.
+pub type Result<T> = std::result::Result<T, NodeError>;
+
 use k256::ecdsa::SigningKey;
 use logos_messaging_a2a_core::registry::AgentRegistry;
 use logos_messaging_a2a_core::AgentCard;
@@ -240,19 +267,22 @@ impl<T: Transport> WakuA2ANode<T> {
         path: &Path,
     ) -> Result<Self> {
         let signing_key = if path.exists() {
-            let hex_str = std::fs::read_to_string(path)
-                .with_context(|| format!("failed to read keyfile {}", path.display()))?;
-            let bytes = hex::decode(hex_str.trim())
-                .with_context(|| format!("invalid hex in keyfile {}", path.display()))?;
+            let hex_str = std::fs::read_to_string(path).map_err(|e| {
+                NodeError::Other(format!("failed to read keyfile {}: {}", path.display(), e))
+            })?;
+            let bytes = hex::decode(hex_str.trim()).map_err(|e| {
+                NodeError::Other(format!("invalid hex in keyfile {}: {}", path.display(), e))
+            })?;
             if bytes.len() != 32 {
-                anyhow::bail!(
+                return Err(NodeError::Other(format!(
                     "keyfile {} contains {} bytes, expected 32",
                     path.display(),
                     bytes.len()
-                );
+                )));
             }
-            SigningKey::from_bytes(bytes.as_slice().into())
-                .with_context(|| format!("invalid signing key in {}", path.display()))?
+            SigningKey::from_bytes(bytes.as_slice().into()).map_err(|e| {
+                NodeError::Other(format!("invalid signing key in {}: {}", path.display(), e))
+            })?
         } else {
             let key = SigningKey::random(&mut rand_core());
             let hex_str = hex::encode(key.to_bytes());
@@ -260,20 +290,30 @@ impl<T: Transport> WakuA2ANode<T> {
             // Write atomically: create file, set perms, write content
             {
                 use std::io::Write;
-                let mut file = std::fs::File::create(path)
-                    .with_context(|| format!("failed to create keyfile {}", path.display()))?;
+                let mut file = std::fs::File::create(path).map_err(|e| {
+                    NodeError::Other(format!(
+                        "failed to create keyfile {}: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
 
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     file.set_permissions(std::fs::Permissions::from_mode(0o600))
-                        .with_context(|| {
-                            format!("failed to set permissions on {}", path.display())
+                        .map_err(|e| {
+                            NodeError::Other(format!(
+                                "failed to set permissions on {}: {}",
+                                path.display(),
+                                e
+                            ))
                         })?;
                 }
 
-                file.write_all(hex_str.as_bytes())
-                    .with_context(|| format!("failed to write keyfile {}", path.display()))?;
+                file.write_all(hex_str.as_bytes()).map_err(|e| {
+                    NodeError::Other(format!("failed to write keyfile {}: {}", path.display(), e))
+                })?;
             }
 
             key

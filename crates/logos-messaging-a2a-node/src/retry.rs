@@ -4,11 +4,12 @@
 //! failed `send_reliable` call with exponential backoff according to a
 //! [`RetryConfig`].
 
-use anyhow::Result;
 use logos_messaging_a2a_core::RetryConfig;
 use logos_messaging_a2a_transport::sds::MessageChannel;
 use logos_messaging_a2a_transport::Transport;
 use std::time::Duration;
+
+use crate::{NodeError, Result};
 
 /// Retry wrapper around [`MessageChannel::send_reliable`].
 ///
@@ -59,9 +60,11 @@ impl<'a, T: Transport> RetryLayer<'a, T> {
             }
         }
 
-        Err(last_err
-            .unwrap()
-            .context(format!("all {} attempts failed", self.config.max_attempts)))
+        Err(NodeError::Other(format!(
+            "all {} attempts failed: {}",
+            self.config.max_attempts,
+            last_err.unwrap()
+        )))
     }
 
     /// Compute the delay for a given 0-indexed attempt, with optional jitter.
@@ -89,14 +92,21 @@ mod tests {
 
     #[async_trait]
     impl Transport for DummyTransport {
-        async fn publish(&self, _topic: &str, _payload: &[u8]) -> anyhow::Result<()> {
+        async fn publish(
+            &self,
+            _topic: &str,
+            _payload: &[u8],
+        ) -> logos_messaging_a2a_transport::Result<()> {
             Ok(())
         }
-        async fn subscribe(&self, _topic: &str) -> anyhow::Result<mpsc::Receiver<Vec<u8>>> {
+        async fn subscribe(
+            &self,
+            _topic: &str,
+        ) -> logos_messaging_a2a_transport::Result<mpsc::Receiver<Vec<u8>>> {
             let (_, rx) = mpsc::channel(1);
             Ok(rx)
         }
-        async fn unsubscribe(&self, _topic: &str) -> anyhow::Result<()> {
+        async fn unsubscribe(&self, _topic: &str) -> logos_messaging_a2a_transport::Result<()> {
             Ok(())
         }
     }

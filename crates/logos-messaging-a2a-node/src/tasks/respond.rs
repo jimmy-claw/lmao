@@ -1,8 +1,7 @@
-use anyhow::{Context, Result};
 use logos_messaging_a2a_core::{topics, AgentCard, Task};
 use logos_messaging_a2a_transport::Transport;
 
-use crate::WakuA2ANode;
+use crate::{Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
     /// Respond to a task: send back a completed task with result.
@@ -25,10 +24,7 @@ impl<T: Transport> WakuA2ANode<T> {
         let payload = self.prepare_payload(&response, sender_card).await?;
 
         // Use causal send for responses (maintains ordering, no retransmit block)
-        self.channel
-            .send(&topic, &payload)
-            .await
-            .context("Failed to send response")?;
+        self.channel.send(&topic, &payload).await?;
 
         tracing::info!(task_id = %task.id, "Responded to task");
         Ok(())

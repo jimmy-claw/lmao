@@ -4,8 +4,8 @@
 //! New subscribers receive all historical messages (replay), making it suitable for
 //! tests where publish may happen before subscribe.
 
+use crate::Result;
 use crate::Transport;
-use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

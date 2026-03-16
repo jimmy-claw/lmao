@@ -2363,7 +2363,6 @@ checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 name = "lmao-ffi"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "cbindgen",
  "logos-messaging-a2a-core",
  "logos-messaging-a2a-node",
@@ -2427,7 +2426,6 @@ dependencies = [
 name = "logos-messaging-a2a-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "criterion",
  "hex",
@@ -2435,6 +2433,7 @@ dependencies = [
  "logos-messaging-a2a-crypto",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "uuid",
 ]
@@ -2443,7 +2442,6 @@ dependencies = [
 name = "logos-messaging-a2a-crypto"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "base64 0.22.1",
  "chacha20poly1305",
  "criterion",
@@ -2452,6 +2450,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "x25519-dalek",
 ]
 
@@ -2461,7 +2460,6 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
- "anyhow",
  "async-trait",
  "hex",
  "log",
@@ -2469,6 +2467,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "wiremock",
 ]
@@ -2510,7 +2509,6 @@ dependencies = [
 name = "logos-messaging-a2a-node"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "fastrand",
  "hex",
@@ -2523,6 +2521,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
@@ -2545,7 +2544,6 @@ dependencies = [
 name = "logos-messaging-a2a-transport"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bloomfilter",
@@ -2555,6 +2553,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",

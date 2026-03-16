@@ -1,9 +1,8 @@
-use anyhow::{Context, Result};
 use logos_messaging_a2a_core::{topics, AgentCard, Task};
 use logos_messaging_a2a_transport::Transport;
 
 use crate::retry;
-use crate::WakuA2ANode;
+use crate::{NodeError, Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
     /// Send a task to another agent. Uses SDS reliable delivery with
@@ -34,13 +33,9 @@ impl<T: Transport> WakuA2ANode<T> {
         let (_msg, acked) = if let Some(ref retry_cfg) = self.retry_config {
             retry::RetryLayer::new(&self.channel, retry_cfg)
                 .send_reliable(&topic, &payload)
-                .await
-                .context("SDS publish failed (after retries)")?
+                .await?
         } else {
-            self.channel
-                .send_reliable(&topic, &payload)
-                .await
-                .context("SDS publish failed")?
+            self.channel.send_reliable(&topic, &payload).await?
         };
 
         if acked {
@@ -57,7 +52,7 @@ impl<T: Transport> WakuA2ANode<T> {
             let sessions = self.sessions.lock().unwrap();
             let session = sessions
                 .get(session_id)
-                .ok_or_else(|| anyhow::anyhow!("Session {} not found", session_id))?;
+                .ok_or_else(|| NodeError::Other(format!("Session {} not found", session_id)))?;
             session.peer.clone()
         };
         let task = Task::new_in_session(self.pubkey(), &peer, text, session_id);

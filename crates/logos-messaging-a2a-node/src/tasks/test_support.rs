@@ -1,9 +1,10 @@
 //! Shared test infrastructure for task submodule tests.
 
-use anyhow::Result;
 use async_trait::async_trait;
 use logos_messaging_a2a_core::AgentCard;
-use logos_messaging_a2a_execution::{AgentId, ExecutionBackend, TransferDetails, TxHash};
+use logos_messaging_a2a_execution::{
+    AgentId, ExecutionBackend, ExecutionError, TransferDetails, TxHash,
+};
 use logos_messaging_a2a_storage::StorageBackend;
 use logos_messaging_a2a_transport::Transport;
 use std::collections::HashMap;
@@ -57,7 +58,11 @@ impl Clone for MockTransport {
 
 #[async_trait]
 impl Transport for MockTransport {
-    async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
+    async fn publish(
+        &self,
+        topic: &str,
+        payload: &[u8],
+    ) -> logos_messaging_a2a_transport::Result<()> {
         let data = payload.to_vec();
         self.published
             .lock()
@@ -76,7 +81,10 @@ impl Transport for MockTransport {
         Ok(())
     }
 
-    async fn subscribe(&self, topic: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
+    async fn subscribe(
+        &self,
+        topic: &str,
+    ) -> logos_messaging_a2a_transport::Result<mpsc::Receiver<Vec<u8>>> {
         let mut state = self.state.lock().unwrap();
         let (tx, rx) = mpsc::channel(1024);
         if let Some(history) = state.history.get(topic) {
@@ -92,7 +100,7 @@ impl Transport for MockTransport {
         Ok(rx)
     }
 
-    async fn unsubscribe(&self, topic: &str) -> Result<()> {
+    async fn unsubscribe(&self, topic: &str) -> logos_messaging_a2a_transport::Result<()> {
         let mut state = self.state.lock().unwrap();
         state.subscribers.remove(topic);
         Ok(())
@@ -152,16 +160,16 @@ pub struct MockExecutionBackend;
 
 #[async_trait]
 impl ExecutionBackend for MockExecutionBackend {
-    async fn register_agent(&self, _card: &AgentCard) -> anyhow::Result<TxHash> {
+    async fn register_agent(&self, _card: &AgentCard) -> Result<TxHash, ExecutionError> {
         Ok(TxHash([0; 32]))
     }
-    async fn pay(&self, _to: &AgentId, _amount: u64) -> anyhow::Result<TxHash> {
+    async fn pay(&self, _to: &AgentId, _amount: u64) -> Result<TxHash, ExecutionError> {
         Ok(TxHash([0xab; 32]))
     }
-    async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+    async fn balance(&self, _agent: &AgentId) -> Result<u64, ExecutionError> {
         Ok(1000)
     }
-    async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+    async fn verify_transfer(&self, _tx_hash: &str) -> Result<TransferDetails, ExecutionError> {
         Ok(TransferDetails {
             from: "0xsender".into(),
             to: "0xrecipient".into(),
@@ -178,16 +186,16 @@ pub struct VerifyingBackend {
 
 #[async_trait]
 impl ExecutionBackend for VerifyingBackend {
-    async fn register_agent(&self, _card: &AgentCard) -> anyhow::Result<TxHash> {
+    async fn register_agent(&self, _card: &AgentCard) -> Result<TxHash, ExecutionError> {
         Ok(TxHash([0; 32]))
     }
-    async fn pay(&self, _to: &AgentId, _amount: u64) -> anyhow::Result<TxHash> {
+    async fn pay(&self, _to: &AgentId, _amount: u64) -> Result<TxHash, ExecutionError> {
         Ok(TxHash([0; 32]))
     }
-    async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+    async fn balance(&self, _agent: &AgentId) -> Result<u64, ExecutionError> {
         Ok(0)
     }
-    async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+    async fn verify_transfer(&self, _tx_hash: &str) -> Result<TransferDetails, ExecutionError> {
         Ok(self.details.clone())
     }
 }
@@ -197,16 +205,18 @@ pub struct FailingPayBackend;
 
 #[async_trait]
 impl ExecutionBackend for FailingPayBackend {
-    async fn register_agent(&self, _card: &AgentCard) -> anyhow::Result<TxHash> {
+    async fn register_agent(&self, _card: &AgentCard) -> Result<TxHash, ExecutionError> {
         Ok(TxHash([0; 32]))
     }
-    async fn pay(&self, _to: &AgentId, _amount: u64) -> anyhow::Result<TxHash> {
-        anyhow::bail!("payment failed: insufficient funds")
+    async fn pay(&self, _to: &AgentId, _amount: u64) -> Result<TxHash, ExecutionError> {
+        Err(ExecutionError::Other(
+            "payment failed: insufficient funds".into(),
+        ))
     }
-    async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+    async fn balance(&self, _agent: &AgentId) -> Result<u64, ExecutionError> {
         Ok(0)
     }
-    async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+    async fn verify_transfer(&self, _tx_hash: &str) -> Result<TransferDetails, ExecutionError> {
         Ok(TransferDetails {
             from: String::new(),
             to: String::new(),
@@ -221,17 +231,20 @@ pub struct FailingVerifyBackend;
 
 #[async_trait]
 impl ExecutionBackend for FailingVerifyBackend {
-    async fn register_agent(&self, _card: &AgentCard) -> anyhow::Result<TxHash> {
+    async fn register_agent(&self, _card: &AgentCard) -> Result<TxHash, ExecutionError> {
         Ok(TxHash([0; 32]))
     }
-    async fn pay(&self, _to: &AgentId, _amount: u64) -> anyhow::Result<TxHash> {
+    async fn pay(&self, _to: &AgentId, _amount: u64) -> Result<TxHash, ExecutionError> {
         Ok(TxHash([0; 32]))
     }
-    async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+    async fn balance(&self, _agent: &AgentId) -> Result<u64, ExecutionError> {
         Ok(0)
     }
-    async fn verify_transfer(&self, tx_hash: &str) -> anyhow::Result<TransferDetails> {
-        anyhow::bail!("Transaction {} not found", tx_hash)
+    async fn verify_transfer(&self, tx_hash: &str) -> Result<TransferDetails, ExecutionError> {
+        Err(ExecutionError::Other(format!(
+            "Transaction {} not found",
+            tx_hash
+        )))
     }
 }
 

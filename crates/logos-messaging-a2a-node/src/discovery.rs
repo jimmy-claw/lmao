@@ -1,12 +1,11 @@
 //! Discovery, presence, and registry operations for [`WakuA2ANode`].
 
-use anyhow::{Context, Result};
 use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, PresenceAnnouncement};
 use logos_messaging_a2a_transport::Transport;
 use std::collections::HashMap;
 
 use crate::presence;
-use crate::WakuA2ANode;
+use crate::{NodeError, Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
     /// Broadcast this agent's card on the discovery topic.
@@ -15,12 +14,11 @@ impl<T: Transport> WakuA2ANode<T> {
     /// broadcast to unknown peers who may not speak SDS yet.
     pub async fn announce(&self) -> Result<()> {
         let envelope = A2AEnvelope::AgentCard(self.card.clone());
-        let payload = serde_json::to_vec(&envelope).context("Failed to serialize AgentCard")?;
+        let payload = serde_json::to_vec(&envelope)?;
         self.channel
             .transport()
             .publish(topics::DISCOVERY, &payload)
-            .await
-            .context("Failed to announce AgentCard")?;
+            .await?;
         tracing::info!(name = %self.card.name, pubkey = %self.pubkey(), "Announced");
         Ok(())
     }
@@ -56,29 +54,38 @@ impl<T: Transport> WakuA2ANode<T> {
     /// is already registered (use [`update_registry`](Self::update_registry)
     /// to update an existing registration).
     pub async fn register_in_registry(&self) -> Result<()> {
-        let registry = self.registry.as_ref().context("no registry configured")?;
+        let registry = self
+            .registry
+            .as_ref()
+            .ok_or_else(|| NodeError::Other("no registry configured".into()))?;
         registry
             .register(self.card.clone())
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| NodeError::Other(format!("{}", e)))
     }
 
     /// Update this node's AgentCard in the persistent registry.
     pub async fn update_registry(&self) -> Result<()> {
-        let registry = self.registry.as_ref().context("no registry configured")?;
+        let registry = self
+            .registry
+            .as_ref()
+            .ok_or_else(|| NodeError::Other("no registry configured".into()))?;
         registry
             .update(self.card.clone())
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| NodeError::Other(format!("{}", e)))
     }
 
     /// Remove this node from the persistent registry.
     pub async fn deregister_from_registry(&self) -> Result<()> {
-        let registry = self.registry.as_ref().context("no registry configured")?;
+        let registry = self
+            .registry
+            .as_ref()
+            .ok_or_else(|| NodeError::Other("no registry configured".into()))?;
         registry
             .deregister(&self.card.public_key)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| NodeError::Other(format!("{}", e)))
     }
 
     /// Discover agents from all sources: Waku ephemeral discovery + persistent registry.
@@ -130,17 +137,13 @@ impl<T: Transport> WakuA2ANode<T> {
             ttl_secs,
             signature: None,
         };
-        announcement
-            .sign(&self.signing_key)
-            .context("Failed to sign presence announcement")?;
+        announcement.sign(&self.signing_key)?;
         let envelope = A2AEnvelope::Presence(announcement);
-        let payload =
-            serde_json::to_vec(&envelope).context("Failed to serialize presence announcement")?;
+        let payload = serde_json::to_vec(&envelope)?;
         self.channel
             .transport()
             .publish(topics::PRESENCE, &payload)
-            .await
-            .context("Failed to publish presence announcement")?;
+            .await?;
         tracing::info!(name = %self.card.name, ttl_secs, "Presence announced");
         Ok(())
     }

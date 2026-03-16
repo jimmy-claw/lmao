@@ -6,7 +6,7 @@
 
 use crate::logos_core;
 use crate::Transport;
-use anyhow::{bail, Result};
+use crate::{Result, TransportError};
 use async_trait::async_trait;
 use base64::Engine;
 use std::collections::HashMap;
@@ -49,17 +49,27 @@ impl LogosCoreDeliveryTransport {
         let result =
             logos_core::call_plugin_method(PLUGIN, "createNode", &params_json(&[("cfg", cfg)]))
                 .await
-                .map_err(|e| anyhow::anyhow!("delivery_module createNode failed: {}", e))?;
+                .map_err(|e| {
+                    TransportError::Transport(format!("delivery_module createNode failed: {}", e))
+                })?;
         if result != "true" {
-            bail!("delivery_module createNode returned: {}", result);
+            return Err(TransportError::Transport(format!(
+                "delivery_module createNode returned: {}",
+                result
+            )));
         }
 
         // start
         let result = logos_core::call_plugin_method(PLUGIN, "start", "[]")
             .await
-            .map_err(|e| anyhow::anyhow!("delivery_module start failed: {}", e))?;
+            .map_err(|e| {
+                TransportError::Transport(format!("delivery_module start failed: {}", e))
+            })?;
         if result != "true" {
-            bail!("delivery_module start returned: {}", result);
+            return Err(TransportError::Transport(format!(
+                "delivery_module start returned: {}",
+                result
+            )));
         }
 
         let subscriptions: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Vec<u8>>>>> =
@@ -113,10 +123,13 @@ impl Transport for LogosCoreDeliveryTransport {
             &params_json(&[("contentTopic", topic), ("payload", &payload_b64)]),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("delivery_module send failed: {}", e))?;
+        .map_err(|e| TransportError::Transport(format!("delivery_module send failed: {}", e)))?;
 
         if result.starts_with("error") || result.starts_with("Error") {
-            bail!("delivery_module send returned error: {}", result);
+            return Err(TransportError::Transport(format!(
+                "delivery_module send returned error: {}",
+                result
+            )));
         }
         Ok(())
     }
@@ -128,9 +141,14 @@ impl Transport for LogosCoreDeliveryTransport {
             &params_json(&[("contentTopic", topic)]),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("delivery_module subscribe failed: {}", e))?;
+        .map_err(|e| {
+            TransportError::Transport(format!("delivery_module subscribe failed: {}", e))
+        })?;
         if result != "true" {
-            bail!("delivery_module subscribe returned: {}", result);
+            return Err(TransportError::Transport(format!(
+                "delivery_module subscribe returned: {}",
+                result
+            )));
         }
 
         let (tx, rx_unbounded) = mpsc::unbounded_channel();
@@ -161,9 +179,14 @@ impl Transport for LogosCoreDeliveryTransport {
             &params_json(&[("contentTopic", topic)]),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("delivery_module unsubscribe failed: {}", e))?;
+        .map_err(|e| {
+            TransportError::Transport(format!("delivery_module unsubscribe failed: {}", e))
+        })?;
         if result != "true" {
-            bail!("delivery_module unsubscribe returned: {}", result);
+            return Err(TransportError::Transport(format!(
+                "delivery_module unsubscribe returned: {}",
+                result
+            )));
         }
         Ok(())
     }
@@ -204,7 +227,7 @@ mod tests {
     #[test]
     fn params_json_is_valid_json() {
         let result = params_json(&[("a", "1"), ("b", "2"), ("c", "3")]);
-        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&result);
+        let parsed: std::result::Result<serde_json::Value, _> = serde_json::from_str(&result);
         assert!(parsed.is_ok(), "params_json should produce valid JSON");
     }
 

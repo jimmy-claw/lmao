@@ -1,10 +1,9 @@
 //! Integration tests for message retry with exponential backoff.
 
-use anyhow::Result;
 use async_trait::async_trait;
 use logos_messaging_a2a_core::RetryConfig;
 use logos_messaging_a2a_node::WakuA2ANode;
-use logos_messaging_a2a_transport::Transport;
+use logos_messaging_a2a_transport::{Transport, TransportError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,15 +45,19 @@ impl FailNTransport {
 
 #[async_trait]
 impl Transport for FailNTransport {
-    async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
+    async fn publish(
+        &self,
+        topic: &str,
+        payload: &[u8],
+    ) -> logos_messaging_a2a_transport::Result<()> {
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
         let fail_count = self.state.lock().unwrap().fail_count;
 
         if attempt < fail_count {
-            return Err(anyhow::anyhow!(
+            return Err(TransportError::Other(format!(
                 "simulated transport failure (attempt {})",
                 attempt + 1
-            ));
+            )));
         }
 
         let data = payload.to_vec();
@@ -70,7 +73,10 @@ impl Transport for FailNTransport {
         Ok(())
     }
 
-    async fn subscribe(&self, topic: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
+    async fn subscribe(
+        &self,
+        topic: &str,
+    ) -> logos_messaging_a2a_transport::Result<mpsc::Receiver<Vec<u8>>> {
         let mut state = self.state.lock().unwrap();
         let (tx, rx) = mpsc::channel(1024);
         if let Some(history) = state.history.get(topic) {
@@ -86,7 +92,7 @@ impl Transport for FailNTransport {
         Ok(rx)
     }
 
-    async fn unsubscribe(&self, topic: &str) -> Result<()> {
+    async fn unsubscribe(&self, topic: &str) -> logos_messaging_a2a_transport::Result<()> {
         let mut state = self.state.lock().unwrap();
         state.subscribers.remove(topic);
         Ok(())

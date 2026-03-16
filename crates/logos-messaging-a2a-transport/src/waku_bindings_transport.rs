@@ -8,7 +8,7 @@
 //! See: <https://github.com/logos-messaging/logos-delivery-rust-bindings>
 
 use crate::Transport;
-use anyhow::{Context, Result};
+use crate::{Result, TransportError};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
@@ -64,7 +64,7 @@ impl NativeWakuTransport {
     pub async fn new(config: WakuNodeConfig) -> Result<Self> {
         let node = waku_new(Some(config))
             .await
-            .map_err(|e| anyhow::anyhow!("waku_new failed: {}", e))?;
+            .map_err(|e| TransportError::Transport(format!("waku_new failed: {}", e)))?;
 
         let senders: Arc<Mutex<HashMap<String, mpsc::Sender<Vec<u8>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -85,27 +85,29 @@ impl NativeWakuTransport {
                 }
             }
         })
-        .map_err(|e| anyhow::anyhow!("set_event_callback failed: {}", e))?;
+        .map_err(|e| TransportError::Transport(format!("set_event_callback failed: {}", e)))?;
 
         // SAFETY: waku FFI futures are safe to send across threads
         let node = unsafe { assert_send(node.start()) }
             .await
-            .map_err(|e| anyhow::anyhow!("waku start failed: {}", e))?;
+            .map_err(|e| TransportError::Transport(format!("waku start failed: {}", e)))?;
 
         unsafe { assert_send(node.relay_subscribe(&PubsubTopic::new(DEFAULT_PUBSUB_TOPIC))) }
             .await
-            .map_err(|e| anyhow::anyhow!("relay_subscribe failed: {}", e))?;
+            .map_err(|e| TransportError::Transport(format!("relay_subscribe failed: {}", e)))?;
 
         Ok(Self { node, senders })
     }
 
     /// Connect to a peer by multiaddress.
     pub async fn connect(&self, addr: &str) -> Result<()> {
-        let multiaddr: waku_bindings::Multiaddr = addr.parse().context("invalid multiaddress")?;
+        let multiaddr: waku_bindings::Multiaddr = addr
+            .parse()
+            .map_err(|e| TransportError::Transport(format!("invalid multiaddress: {}", e)))?;
         // SAFETY: waku FFI futures are safe to send across threads
         unsafe { assert_send(self.node.connect(&multiaddr, None)) }
             .await
-            .map_err(|e| anyhow::anyhow!("connect failed: {}", e))
+            .map_err(|e| TransportError::Transport(format!("connect failed: {}", e)))
     }
 
     /// Get the listening multiaddresses of this node.
@@ -113,7 +115,7 @@ impl NativeWakuTransport {
         // SAFETY: waku FFI futures are safe to send across threads
         let addrs = unsafe { assert_send(self.node.listen_addresses()) }
             .await
-            .map_err(|e| anyhow::anyhow!("listen_addresses failed: {}", e))?;
+            .map_err(|e| TransportError::Transport(format!("listen_addresses failed: {}", e)))?;
         Ok(addrs.into_iter().map(|a| a.to_string()).collect())
     }
 }
@@ -143,7 +145,7 @@ impl Transport for NativeWakuTransport {
             )
         }
         .await
-        .map_err(|e| anyhow::anyhow!("publish failed: {}", e))?;
+        .map_err(|e| TransportError::Transport(format!("publish failed: {}", e)))?;
         Ok(())
     }
 
@@ -155,7 +157,7 @@ impl Transport for NativeWakuTransport {
 
         self.senders
             .lock()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {}", e))?
+            .map_err(|e| TransportError::Transport(format!("lock poisoned: {}", e)))?
             .insert(content_topic_str, tx);
 
         Ok(rx)
@@ -167,7 +169,7 @@ impl Transport for NativeWakuTransport {
 
         self.senders
             .lock()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {}", e))?
+            .map_err(|e| TransportError::Transport(format!("lock poisoned: {}", e)))?
             .remove(&content_topic_str);
 
         Ok(())

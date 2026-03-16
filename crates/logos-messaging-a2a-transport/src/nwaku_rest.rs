@@ -5,7 +5,7 @@
 //! integration (Issue #1).
 
 use crate::Transport;
-use anyhow::{Context, Result};
+use crate::{Result, TransportError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -129,12 +129,15 @@ async fn poll_rest_messages(
         .get(&url)
         .send()
         .await
-        .context("Failed to poll nwaku")?;
+        .map_err(|e| TransportError::Transport(format!("Failed to poll nwaku: {}", e)))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("nwaku poll failed ({}): {}", status, body);
+        return Err(TransportError::Transport(format!(
+            "nwaku poll failed ({}): {}",
+            status, body
+        )));
     }
 
     let messages: Vec<WakuMessageResponse> = resp.json().await.unwrap_or_default();
@@ -179,12 +182,15 @@ impl Transport for LogosMessagingTransport {
             .json(&msg)
             .send()
             .await
-            .context("Failed to publish to nwaku")?;
+            .map_err(|e| TransportError::Transport(format!("Failed to publish to nwaku: {}", e)))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("nwaku publish failed ({}): {}", status, body);
+            return Err(TransportError::Transport(format!(
+                "nwaku publish failed ({}): {}",
+                status, body
+            )));
         }
         Ok(())
     }

@@ -19,7 +19,7 @@
 use async_trait::async_trait;
 use logos_messaging_a2a_core::AgentCard;
 
-use crate::{AgentId, ExecutionBackend, TransferDetails, TxHash};
+use crate::{AgentId, ExecutionBackend, ExecutionError, TransferDetails, TxHash};
 
 /// Default Status Network Sepolia RPC endpoint.
 pub const DEFAULT_RPC_URL: &str = "https://public.sepolia.rpc.status.network";
@@ -74,7 +74,7 @@ impl StatusNetworkBackend {
         &self,
         method: &str,
         params: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> Result<serde_json::Value, ExecutionError> {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -87,17 +87,19 @@ impl StatusNetworkBackend {
             .post(&self.rpc_url)
             .json(&body)
             .send()
-            .await?
+            .await
+            .map_err(|e| ExecutionError::Rpc(e.to_string()))?
             .json()
-            .await?;
+            .await
+            .map_err(|e| ExecutionError::Rpc(e.to_string()))?;
 
         if let Some(error) = resp.get("error") {
-            anyhow::bail!("RPC error: {}", error);
+            return Err(ExecutionError::Rpc(format!("{}", error)));
         }
 
         resp.get("result")
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Missing result in RPC response"))
+            .ok_or_else(|| ExecutionError::Rpc("Missing result in RPC response".into()))
     }
 
     /// Parse an ERC-20 Transfer event from transaction receipt logs.
@@ -107,7 +109,7 @@ impl StatusNetworkBackend {
     fn parse_transfer_log(
         &self,
         logs: &[serde_json::Value],
-    ) -> anyhow::Result<(String, String, u64)> {
+    ) -> Result<(String, String, u64), ExecutionError> {
         for log in logs {
             let topics = log
                 .get("topics")
@@ -154,7 +156,9 @@ impl StatusNetworkBackend {
             return Ok((from, to, amount));
         }
 
-        anyhow::bail!("No Transfer event found in transaction logs")
+        Err(ExecutionError::Other(
+            "No Transfer event found in transaction logs".into(),
+        ))
     }
 }
 
@@ -167,7 +171,7 @@ impl ExecutionBackend for StatusNetworkBackend {
     ///
     /// Note: Full transaction submission requires a signer (future work).
     /// Currently performs an `eth_call` dry-run against the registry contract.
-    async fn register_agent(&self, card: &AgentCard) -> anyhow::Result<TxHash> {
+    async fn register_agent(&self, card: &AgentCard) -> Result<TxHash, ExecutionError> {
         use alloy_primitives::FixedBytes;
         use alloy_sol_types::{sol, SolCall};
 
@@ -214,7 +218,7 @@ impl ExecutionBackend for StatusNetworkBackend {
     /// Send tokens to another agent via the ERC-20 token contract.
     ///
     /// Currently a stub that verifies RPC connectivity.
-    async fn pay(&self, to: &AgentId, amount: u64) -> anyhow::Result<TxHash> {
+    async fn pay(&self, to: &AgentId, amount: u64) -> Result<TxHash, ExecutionError> {
         let _chain_id = self.rpc_call("eth_chainId", serde_json::json!([])).await?;
 
         let mut hash = [0u8; 32];
@@ -225,7 +229,7 @@ impl ExecutionBackend for StatusNetworkBackend {
     }
 
     /// Query the token balance for an agent.
-    async fn balance(&self, agent: &AgentId) -> anyhow::Result<u64> {
+    async fn balance(&self, agent: &AgentId) -> Result<u64, ExecutionError> {
         let padded_addr = format!("{:0>64}", agent.0.trim_start_matches("0x"));
         let calldata = format!("0x70a08231{}", padded_addr);
 
@@ -249,7 +253,7 @@ impl ExecutionBackend for StatusNetworkBackend {
     ///
     /// Fetches the receipt, checks that the transaction succeeded (status 0x1),
     /// and parses the ERC-20 Transfer event from the logs.
-    async fn verify_transfer(&self, tx_hash: &str) -> anyhow::Result<TransferDetails> {
+    async fn verify_transfer(&self, tx_hash: &str) -> Result<TransferDetails, ExecutionError> {
         // Normalise tx hash
         let tx_hash = if tx_hash.starts_with("0x") {
             tx_hash.to_string()
@@ -263,7 +267,10 @@ impl ExecutionBackend for StatusNetworkBackend {
             .await?;
 
         if receipt.is_null() {
-            anyhow::bail!("Transaction {} not found (not mined yet?)", tx_hash);
+            return Err(ExecutionError::Other(format!(
+                "Transaction {} not found (not mined yet?)",
+                tx_hash
+            )));
         }
 
         // Check status (0x1 = success)
@@ -272,7 +279,10 @@ impl ExecutionBackend for StatusNetworkBackend {
             .and_then(|s| s.as_str())
             .unwrap_or("0x0");
         if status != "0x1" {
-            anyhow::bail!("Transaction {} failed (status: {})", tx_hash, status);
+            return Err(ExecutionError::Other(format!(
+                "Transaction {} failed (status: {})",
+                tx_hash, status
+            )));
         }
 
         // Get block number

@@ -10,8 +10,23 @@
 //! The [`sds`] submodule implements the SDS (Scalable Data Sync) reliability layer on top of
 //! any `Transport`, adding causal ordering, bloom-filter deduplication, and retransmission.
 
-use anyhow::Result;
 use async_trait::async_trait;
+
+/// Errors that can occur during transport operations.
+#[derive(Debug, thiserror::Error)]
+pub enum TransportError {
+    #[error("{0}")]
+    Transport(String),
+
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+
+    #[error("{0}")]
+    Other(String),
+}
+
+/// Alias for results returned by transport operations.
+pub type Result<T> = std::result::Result<T, TransportError>;
 use tokio::sync::mpsc;
 
 pub mod memory;

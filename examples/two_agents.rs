@@ -10,7 +10,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use logos_messaging_a2a::{
-    A2AEnvelope, AgentId, ExecutionBackend, InMemoryTransport, PaymentConfig, Task,
+    A2AEnvelope, AgentId, ExecutionBackend, ExecutionError, InMemoryTransport, PaymentConfig, Task,
     TransferDetails, Transport, TxHash, WakuA2ANode,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,11 +37,11 @@ impl ExecutionBackend for MockPaymentBackend {
     async fn register_agent(
         &self,
         _card: &logos_messaging_a2a::AgentCard,
-    ) -> anyhow::Result<TxHash> {
+    ) -> Result<TxHash, ExecutionError> {
         Ok(TxHash([0; 32]))
     }
 
-    async fn pay(&self, _to: &AgentId, amount: u64) -> anyhow::Result<TxHash> {
+    async fn pay(&self, _to: &AgentId, amount: u64) -> Result<TxHash, ExecutionError> {
         let prev = self.balance_a.fetch_sub(amount, Ordering::Relaxed);
         self.balance_b.fetch_add(amount, Ordering::Relaxed);
         println!(
@@ -53,11 +53,11 @@ impl ExecutionBackend for MockPaymentBackend {
         Ok(TxHash([0xaa; 32]))
     }
 
-    async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+    async fn balance(&self, _agent: &AgentId) -> Result<u64, ExecutionError> {
         Ok(self.balance_a.load(Ordering::Relaxed))
     }
 
-    async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+    async fn verify_transfer(&self, _tx_hash: &str) -> Result<TransferDetails, ExecutionError> {
         Ok(TransferDetails {
             from: "0xagent_a".into(),
             to: "0xagent_b".into(),

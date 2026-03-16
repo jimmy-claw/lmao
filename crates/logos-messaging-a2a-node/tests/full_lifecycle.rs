@@ -32,20 +32,33 @@ impl MockPaymentBackend {
 
 #[async_trait]
 impl ExecutionBackend for MockPaymentBackend {
-    async fn register_agent(&self, _card: &AgentCard) -> anyhow::Result<TxHash> {
+    async fn register_agent(
+        &self,
+        _card: &AgentCard,
+    ) -> Result<TxHash, logos_messaging_a2a_execution::ExecutionError> {
         Ok(TxHash([0xaa; 32]))
     }
 
-    async fn pay(&self, to: &AgentId, amount: u64) -> anyhow::Result<TxHash> {
+    async fn pay(
+        &self,
+        to: &AgentId,
+        amount: u64,
+    ) -> Result<TxHash, logos_messaging_a2a_execution::ExecutionError> {
         self.transfers.lock().unwrap().push((to.0.clone(), amount));
         Ok(TxHash([0xbb; 32]))
     }
 
-    async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+    async fn balance(
+        &self,
+        _agent: &AgentId,
+    ) -> Result<u64, logos_messaging_a2a_execution::ExecutionError> {
         Ok(1000)
     }
 
-    async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+    async fn verify_transfer(
+        &self,
+        _tx_hash: &str,
+    ) -> Result<TransferDetails, logos_messaging_a2a_execution::ExecutionError> {
         Ok(TransferDetails {
             from: "0xsender".into(),
             to: "0xreceiver".into(),

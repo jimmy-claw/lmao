@@ -1,9 +1,8 @@
-use anyhow::{Context, Result};
 use logos_messaging_a2a_core::{A2AEnvelope, AgentCard, Message, Task};
 use logos_messaging_a2a_crypto::AgentIdentity;
 use logos_messaging_a2a_transport::Transport;
 
-use crate::WakuA2ANode;
+use crate::{NodeError, Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
     /// Serialize a task into an envelope, offloading to storage if needed.
@@ -17,18 +16,16 @@ impl<T: Transport> WakuA2ANode<T> {
         recipient_card: Option<&AgentCard>,
     ) -> Result<Vec<u8>> {
         let envelope = self.maybe_encrypt_task(task, recipient_card)?;
-        let payload = serde_json::to_vec(&envelope).context("Failed to serialize envelope")?;
+        let payload = serde_json::to_vec(&envelope)?;
 
         if let Some(ref offload) = self.storage_offload {
             if payload.len() > offload.threshold_bytes {
                 // Upload the original task (plaintext) to storage
-                let task_bytes =
-                    serde_json::to_vec(task).context("Failed to serialize task for storage")?;
-                let cid = offload
-                    .backend
-                    .upload(task_bytes)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("storage offload upload failed: {e}"))?;
+                let task_bytes = serde_json::to_vec(task)?;
+                let cid =
+                    offload.backend.upload(task_bytes).await.map_err(|e| {
+                        NodeError::Other(format!("storage offload upload failed: {e}"))
+                    })?;
 
                 // Build a slim task with the CID and cleared content
                 let mut slim = task.clone();
@@ -42,8 +39,7 @@ impl<T: Transport> WakuA2ANode<T> {
                 }
 
                 let slim_envelope = self.maybe_encrypt_task(&slim, recipient_card)?;
-                return serde_json::to_vec(&slim_envelope)
-                    .context("Failed to serialize slim envelope");
+                return Ok(serde_json::to_vec(&slim_envelope)?);
             }
         }
 
@@ -81,8 +77,7 @@ impl<T: Transport> WakuA2ANode<T> {
         let their_pubkey = AgentIdentity::parse_public_key(sender_pubkey_hex)?;
         let session_key = identity.shared_key(&their_pubkey);
         let plaintext = session_key.decrypt(encrypted)?;
-        let task: Task =
-            serde_json::from_slice(&plaintext).context("Failed to deserialize decrypted task")?;
+        let task: Task = serde_json::from_slice(&plaintext)?;
         Ok(task)
     }
 }

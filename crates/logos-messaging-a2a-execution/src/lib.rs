@@ -13,6 +13,16 @@ use logos_messaging_a2a_core::AgentCard;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// Errors that can occur during execution backend operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ExecutionError {
+    #[error("RPC error: {0}")]
+    Rpc(String),
+
+    #[error("{0}")]
+    Other(String),
+}
+
 /// Newtype wrapper for an agent identity (secp256k1 compressed public key hex).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentId(pub String);
@@ -66,20 +76,20 @@ pub struct TransferDetails {
 #[async_trait]
 pub trait ExecutionBackend: Send + Sync {
     /// Register an agent's card on-chain for permanent, discoverable identity.
-    async fn register_agent(&self, card: &AgentCard) -> anyhow::Result<TxHash>;
+    async fn register_agent(&self, card: &AgentCard) -> Result<TxHash, ExecutionError>;
 
     /// Transfer `amount` tokens to another agent.
-    async fn pay(&self, to: &AgentId, amount: u64) -> anyhow::Result<TxHash>;
+    async fn pay(&self, to: &AgentId, amount: u64) -> Result<TxHash, ExecutionError>;
 
     /// Query the token balance for an agent.
-    async fn balance(&self, agent: &AgentId) -> anyhow::Result<u64>;
+    async fn balance(&self, agent: &AgentId) -> Result<u64, ExecutionError>;
 
     /// Verify a transaction hash corresponds to a valid ERC-20 transfer.
     ///
     /// Queries the chain for the transaction receipt, decodes the `Transfer`
     /// event log, and returns the transfer details. Returns an error if the
     /// transaction doesn't exist, failed, or contains no valid transfer event.
-    async fn verify_transfer(&self, tx_hash: &str) -> anyhow::Result<TransferDetails>;
+    async fn verify_transfer(&self, tx_hash: &str) -> Result<TransferDetails, ExecutionError>;
 }
 
 /// Status Network EVM execution backend (gasless, EVM-compatible).
@@ -138,16 +148,16 @@ mod tests {
 
     #[async_trait]
     impl ExecutionBackend for MockBackend {
-        async fn register_agent(&self, _card: &AgentCard) -> anyhow::Result<TxHash> {
+        async fn register_agent(&self, _card: &AgentCard) -> Result<TxHash, ExecutionError> {
             Ok(TxHash([0; 32]))
         }
-        async fn pay(&self, _to: &AgentId, _amount: u64) -> anyhow::Result<TxHash> {
+        async fn pay(&self, _to: &AgentId, _amount: u64) -> Result<TxHash, ExecutionError> {
             Ok(TxHash([1; 32]))
         }
-        async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+        async fn balance(&self, _agent: &AgentId) -> Result<u64, ExecutionError> {
             Ok(42)
         }
-        async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+        async fn verify_transfer(&self, _tx_hash: &str) -> Result<TransferDetails, ExecutionError> {
             Ok(TransferDetails {
                 from: "0xsender".into(),
                 to: "0xrecipient".into(),
