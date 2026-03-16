@@ -20,24 +20,31 @@ mod tasks;
 /// Errors that can occur in node operations.
 #[derive(Debug, thiserror::Error)]
 pub enum NodeError {
+    /// An error originating from the transport layer.
     #[error("transport error: {0}")]
     Transport(#[from] logos_messaging_a2a_transport::TransportError),
 
+    /// An error originating from the crypto layer.
     #[error("crypto error: {0}")]
     Crypto(#[from] logos_messaging_a2a_crypto::CryptoError),
 
+    /// A JSON serialization or deserialization error.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// An error originating from the execution backend.
     #[error("execution error: {0}")]
     Execution(#[from] logos_messaging_a2a_execution::ExecutionError),
 
+    /// An error originating from presence verification.
     #[error("presence error: {0}")]
     Presence(#[from] logos_messaging_a2a_core::PresenceError),
 
+    /// An I/O error (e.g. reading a keyfile).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A catch-all error with a freeform message.
     #[error("{0}")]
     Other(String),
 }

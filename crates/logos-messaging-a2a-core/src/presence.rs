@@ -5,18 +5,23 @@ use serde::{Deserialize, Serialize};
 /// Errors that can occur during presence verification.
 #[derive(Debug, thiserror::Error)]
 pub enum PresenceError {
+    /// The announcement has no signature field set.
     #[error("missing signature")]
     MissingSignature,
 
+    /// The `agent_id` field is not valid hexadecimal.
     #[error("agent_id is not valid hex: {0}")]
     InvalidHex(#[from] hex::FromHexError),
 
+    /// The `agent_id` hex does not decode to a valid secp256k1 public key.
     #[error("agent_id is not a valid secp256k1 public key: {0}")]
     InvalidPublicKey(#[source] k256::ecdsa::Error),
 
+    /// The signature bytes are not valid DER-encoded ECDSA.
     #[error("signature is not valid DER: {0}")]
     InvalidSignature(#[source] k256::ecdsa::Error),
 
+    /// The signature does not match the announcement contents and public key.
     #[error("signature verification failed: {0}")]
     VerificationFailed(#[source] k256::ecdsa::Error),
 }

@@ -15,12 +15,15 @@ use async_trait::async_trait;
 /// Errors that can occur during transport operations.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
+    /// An error from the underlying transport backend (e.g. nwaku REST, IPC).
     #[error("{0}")]
     Transport(String),
 
+    /// A JSON serialization or deserialization error.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// A catch-all error with a freeform message.
     #[error("{0}")]
     Other(String),
 }
