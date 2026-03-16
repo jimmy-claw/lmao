@@ -1,7 +1,25 @@
-use anyhow::{Context, Result};
 use k256::ecdsa::signature::Verifier;
 use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
+
+/// Errors that can occur during presence verification.
+#[derive(Debug, thiserror::Error)]
+pub enum PresenceError {
+    #[error("missing signature")]
+    MissingSignature,
+
+    #[error("agent_id is not valid hex: {0}")]
+    InvalidHex(#[from] hex::FromHexError),
+
+    #[error("agent_id is not a valid secp256k1 public key: {0}")]
+    InvalidPublicKey(#[source] k256::ecdsa::Error),
+
+    #[error("signature is not valid DER: {0}")]
+    InvalidSignature(#[source] k256::ecdsa::Error),
+
+    #[error("signature verification failed: {0}")]
+    VerificationFailed(#[source] k256::ecdsa::Error),
+}
 
 /// Presence announcement broadcast on the well-known presence topic.
 ///
@@ -47,7 +65,7 @@ impl PresenceAnnouncement {
     ///
     /// Computes `canonical_bytes()` and signs with the provided key,
     /// setting the `signature` field to the DER-encoded signature bytes.
-    pub fn sign(&mut self, signing_key: &SigningKey) -> Result<()> {
+    pub fn sign(&mut self, signing_key: &SigningKey) -> Result<(), PresenceError> {
         use k256::ecdsa::signature::Signer;
         let message = self.canonical_bytes();
         let sig: Signature = signing_key.sign(&message);
@@ -59,19 +77,22 @@ impl PresenceAnnouncement {
     ///
     /// Returns `Ok(())` if the signature is present and valid, or an error
     /// describing why verification failed.
-    pub fn verify(&self) -> Result<()> {
-        let sig_bytes = self.signature.as_ref().context("missing signature")?;
+    pub fn verify(&self) -> Result<(), PresenceError> {
+        let sig_bytes = self
+            .signature
+            .as_ref()
+            .ok_or(PresenceError::MissingSignature)?;
 
-        let pubkey_bytes = hex::decode(&self.agent_id).context("agent_id is not valid hex")?;
+        let pubkey_bytes = hex::decode(&self.agent_id)?;
         let verifying_key = VerifyingKey::from_sec1_bytes(&pubkey_bytes)
-            .context("agent_id is not a valid secp256k1 public key")?;
+            .map_err(PresenceError::InvalidPublicKey)?;
 
-        let signature = Signature::from_der(sig_bytes).context("signature is not valid DER")?;
+        let signature = Signature::from_der(sig_bytes).map_err(PresenceError::InvalidSignature)?;
 
         let message = self.canonical_bytes();
         verifying_key
             .verify(&message, &signature)
-            .context("signature verification failed")?;
+            .map_err(PresenceError::VerificationFailed)?;
 
         Ok(())
     }

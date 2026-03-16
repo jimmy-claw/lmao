@@ -14,7 +14,6 @@ logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-anyhow = { workspace = true }
 
 [build-dependencies]
 cbindgen = "0.27"

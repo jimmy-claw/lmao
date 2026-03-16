@@ -9,7 +9,6 @@
 //! AEAD. The [`IntroBundle`] type carries the public key material exchanged
 //! out-of-band to bootstrap a session.
 
-use anyhow::{Context, Result};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng},
     ChaCha20Poly1305, Nonce,
@@ -17,6 +16,28 @@ use chacha20poly1305::{
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
+
+/// Errors that can occur during cryptographic operations.
+#[derive(Debug, thiserror::Error)]
+pub enum CryptoError {
+    #[error("invalid hex: {0}")]
+    Hex(#[from] hex::FromHexError),
+
+    #[error("{0}")]
+    InvalidKeyLength(String),
+
+    #[error("cipher error: {0}")]
+    Cipher(String),
+
+    #[error("invalid base64 nonce")]
+    InvalidBase64Nonce(#[source] base64::DecodeError),
+
+    #[error("invalid base64 ciphertext")]
+    InvalidBase64Ciphertext(#[source] base64::DecodeError),
+}
+
+/// Alias for results returned by cryptographic operations.
+pub type Result<T> = std::result::Result<T, CryptoError>;
 
 /// Agent identity keypair (X25519 for ECDH key agreement).
 pub struct AgentIdentity {
@@ -40,10 +61,10 @@ impl AgentIdentity {
 
     /// Reconstruct from hex-encoded secret key (32 bytes = 64 hex chars). For testing.
     pub fn from_hex(secret_hex: &str) -> Result<Self> {
-        let bytes = hex::decode(secret_hex).context("invalid hex for secret key")?;
+        let bytes = hex::decode(secret_hex)?;
         let arr: [u8; 32] = bytes
             .try_into()
-            .map_err(|_| anyhow::anyhow!("secret key must be 32 bytes"))?;
+            .map_err(|_| CryptoError::InvalidKeyLength("secret key must be 32 bytes".into()))?;
         let secret = StaticSecret::from(arr);
         let public = PublicKey::from(&secret);
         Ok(Self { secret, public })
@@ -51,10 +72,10 @@ impl AgentIdentity {
 
     /// Parse a hex-encoded X25519 public key.
     pub fn parse_public_key(hex_str: &str) -> Result<PublicKey> {
-        let bytes = hex::decode(hex_str).context("invalid hex for public key")?;
+        let bytes = hex::decode(hex_str)?;
         let arr: [u8; 32] = bytes
             .try_into()
-            .map_err(|_| anyhow::anyhow!("public key must be 32 bytes"))?;
+            .map_err(|_| CryptoError::InvalidKeyLength("public key must be 32 bytes".into()))?;
         Ok(PublicKey::from(arr))
     }
 
@@ -73,7 +94,7 @@ impl SessionKey {
     #[allow(deprecated)]
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<EncryptedPayload> {
         let cipher = ChaCha20Poly1305::new_from_slice(&self.0)
-            .map_err(|e| anyhow::anyhow!("cipher init: {}", e))?;
+            .map_err(|e| CryptoError::Cipher(format!("cipher init: {}", e)))?;
 
         let mut nonce_bytes = [0u8; 12];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
@@ -81,7 +102,7 @@ impl SessionKey {
 
         let ciphertext = cipher
             .encrypt(nonce, plaintext)
-            .map_err(|e| anyhow::anyhow!("encrypt: {}", e))?;
+            .map_err(|e| CryptoError::Cipher(format!("encrypt: {}", e)))?;
 
         Ok(EncryptedPayload {
             nonce: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, nonce_bytes),
@@ -96,22 +117,22 @@ impl SessionKey {
     #[allow(deprecated)]
     pub fn decrypt(&self, payload: &EncryptedPayload) -> Result<Vec<u8>> {
         let cipher = ChaCha20Poly1305::new_from_slice(&self.0)
-            .map_err(|e| anyhow::anyhow!("cipher init: {}", e))?;
+            .map_err(|e| CryptoError::Cipher(format!("cipher init: {}", e)))?;
 
         let nonce_bytes =
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &payload.nonce)
-                .context("invalid base64 nonce")?;
+                .map_err(CryptoError::InvalidBase64Nonce)?;
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = base64::Engine::decode(
             &base64::engine::general_purpose::STANDARD,
             &payload.ciphertext,
         )
-        .context("invalid base64 ciphertext")?;
+        .map_err(CryptoError::InvalidBase64Ciphertext)?;
 
         cipher
             .decrypt(nonce, ciphertext.as_ref())
-            .map_err(|e| anyhow::anyhow!("decrypt: {}", e))
+            .map_err(|e| CryptoError::Cipher(format!("decrypt: {}", e)))
     }
 }
 

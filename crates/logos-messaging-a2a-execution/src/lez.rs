@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use logos_messaging_a2a_core::AgentCard;
 
-use crate::{AgentId, ExecutionBackend, TransferDetails, TxHash};
+use crate::{AgentId, ExecutionBackend, ExecutionError, TransferDetails, TxHash};
 
 /// LEZ execution backend (stub).
 ///
@@ -36,22 +36,22 @@ impl Default for LezExecutionBackend {
 #[async_trait]
 impl ExecutionBackend for LezExecutionBackend {
     /// Register an agent on the LEZ chain. (Not yet implemented — see issue #4.)
-    async fn register_agent(&self, _card: &AgentCard) -> anyhow::Result<TxHash> {
+    async fn register_agent(&self, _card: &AgentCard) -> Result<TxHash, ExecutionError> {
         unimplemented!("LEZ execution backend not yet available — tracking in issue #4")
     }
 
     /// Pay another agent via LEZ tokens. (Not yet implemented — see issue #4.)
-    async fn pay(&self, _to: &AgentId, _amount: u64) -> anyhow::Result<TxHash> {
+    async fn pay(&self, _to: &AgentId, _amount: u64) -> Result<TxHash, ExecutionError> {
         unimplemented!("LEZ execution backend not yet available — tracking in issue #4")
     }
 
     /// Query agent balance on LEZ. (Not yet implemented — see issue #4.)
-    async fn balance(&self, _agent: &AgentId) -> anyhow::Result<u64> {
+    async fn balance(&self, _agent: &AgentId) -> Result<u64, ExecutionError> {
         unimplemented!("LEZ execution backend not yet available — tracking in issue #4")
     }
 
     /// Verify a transfer on the LEZ chain. (Not yet implemented — see issue #4.)
-    async fn verify_transfer(&self, _tx_hash: &str) -> anyhow::Result<TransferDetails> {
+    async fn verify_transfer(&self, _tx_hash: &str) -> Result<TransferDetails, ExecutionError> {
         unimplemented!("LEZ execution backend not yet available — tracking in issue #4")
     }
 }

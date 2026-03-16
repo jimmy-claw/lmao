@@ -1,9 +1,8 @@
-use anyhow::{Context, Result};
 use logos_messaging_a2a_core::{A2AEnvelope, Task};
 use logos_messaging_a2a_transport::Transport;
 
 use crate::session::Session;
-use crate::WakuA2ANode;
+use crate::{NodeError, Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
     /// Poll for incoming tasks addressed to this agent.
@@ -131,13 +130,11 @@ impl<T: Transport> WakuA2ANode<T> {
     async fn maybe_fetch_offloaded(&self, task: Task) -> Result<Option<Task>> {
         if let Some(ref cid) = task.payload_cid {
             if let Some(ref offload) = self.storage_offload {
-                let data = offload
-                    .backend
-                    .download(cid)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("storage fetch by CID failed: {e}"))?;
-                let original: Task = serde_json::from_slice(&data)
-                    .context("Failed to deserialize offloaded task")?;
+                let data =
+                    offload.backend.download(cid).await.map_err(|e| {
+                        NodeError::Other(format!("storage fetch by CID failed: {e}"))
+                    })?;
+                let original: Task = serde_json::from_slice(&data)?;
                 return Ok(Some(original));
             }
             tracing::warn!(payload_cid = %cid, "Task has payload_cid but no storage backend configured");

@@ -15,7 +15,7 @@
 //! use logos_messaging_a2a_transport::sds::channel::MessageChannel;
 //! use logos_messaging_a2a_transport::memory::InMemoryTransport;
 //!
-//! # async fn example() -> anyhow::Result<()> {
+//! # async fn example() -> Result<(), logos_messaging_a2a_transport::TransportError> {
 //! let transport = InMemoryTransport::new();
 //! let channel = MessageChannel::new(
 //!     "my-channel".to_string(),

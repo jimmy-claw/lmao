@@ -1,10 +1,9 @@
 //! Streaming operations for [`WakuA2ANode`](crate::WakuA2ANode).
 
-use anyhow::{Context, Result};
 use logos_messaging_a2a_core::{topics, A2AEnvelope, Task, TaskStreamChunk};
 use logos_messaging_a2a_transport::Transport;
 
-use crate::WakuA2ANode;
+use crate::{Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
     /// Publish a sequence of stream chunks for a task.
@@ -23,13 +22,8 @@ impl<T: Transport> WakuA2ANode<T> {
                 is_final: i == total - 1,
             };
             let envelope = A2AEnvelope::StreamChunk(chunk);
-            let payload =
-                serde_json::to_vec(&envelope).context("Failed to serialize stream chunk")?;
-            self.channel
-                .transport()
-                .publish(&topic, &payload)
-                .await
-                .context("Failed to publish stream chunk")?;
+            let payload = serde_json::to_vec(&envelope)?;
+            self.channel.transport().publish(&topic, &payload).await?;
         }
         tracing::info!(task_id = %task.id, chunks = total, "Streamed chunks for task");
         Ok(())
