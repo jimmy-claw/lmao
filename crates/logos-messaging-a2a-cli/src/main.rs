@@ -3,6 +3,7 @@ mod cli;
 mod common;
 mod completion;
 mod health;
+mod info;
 mod metrics;
 mod presence;
 mod session;
@@ -42,5 +43,6 @@ async fn main() -> Result<()> {
             completion::handle(shell);
             Ok(())
         }
+        Commands::Info => info::handle(transport, &identity, json),
     }
 }

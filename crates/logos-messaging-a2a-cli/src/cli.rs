@@ -62,6 +62,8 @@ pub enum Commands {
         /// Shell to generate completions for
         shell: Shell,
     },
+    /// Display agent identity and topic configuration
+    Info,
 }
 
 #[derive(Debug, Subcommand)]
