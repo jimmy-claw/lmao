@@ -1,6 +1,7 @@
 use logos_messaging_a2a_core::{topics, AgentCard, Task};
 use logos_messaging_a2a_transport::Transport;
 
+use crate::metrics::Metrics;
 use crate::{Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -25,6 +26,8 @@ impl<T: Transport> WakuA2ANode<T> {
 
         // Use causal send for responses (maintains ordering, no retransmit block)
         self.channel.send(&topic, &payload).await?;
+        Metrics::inc(&self.metrics.responses_sent);
+        Metrics::inc(&self.metrics.messages_published);
 
         tracing::info!(task_id = %task.id, "Responded to task");
         Ok(())

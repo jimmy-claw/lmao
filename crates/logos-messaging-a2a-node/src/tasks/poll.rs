@@ -1,6 +1,7 @@
 use logos_messaging_a2a_core::{A2AEnvelope, Task};
 use logos_messaging_a2a_transport::Transport;
 
+use crate::metrics::Metrics;
 use crate::session::Session;
 use crate::{NodeError, Result, WakuA2ANode};
 
@@ -31,6 +32,7 @@ impl<T: Transport> WakuA2ANode<T> {
             while let Ok(msg) = rx.try_recv() {
                 msgs.push(msg);
             }
+            Metrics::inc_by(&self.metrics.messages_received, msgs.len() as u64);
             msgs
         };
 
@@ -76,14 +78,17 @@ impl<T: Transport> WakuA2ANode<T> {
             }
         }
         let tasks = verified_tasks;
+        Metrics::inc_by(&self.metrics.tasks_received, tasks.len() as u64);
 
         // Track incoming tasks in their sessions
         for task in &tasks {
             if let Some(ref sid) = task.session_id {
                 let mut sessions = self.sessions.lock().unwrap();
-                let session = sessions
-                    .entry(sid.clone())
-                    .or_insert_with(|| Session::new(&task.from));
+                let metrics = &self.metrics;
+                let session = sessions.entry(sid.clone()).or_insert_with(|| {
+                    Metrics::inc(&metrics.sessions_created);
+                    Session::new(&task.from)
+                });
                 if !session.task_ids.contains(&task.id) {
                     session.task_ids.push(task.id.clone());
                 }

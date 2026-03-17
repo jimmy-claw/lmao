@@ -9,6 +9,7 @@
 
 pub mod delegation;
 pub mod discovery;
+pub mod metrics;
 pub mod payment;
 pub mod presence;
 pub mod retry;
@@ -76,6 +77,12 @@ pub use storage::StorageOffloadConfig;
 /// Re-export of [`payment::PaymentConfig`] for convenient access from crate root.
 pub use payment::PaymentConfig;
 
+/// Re-export of [`metrics::Metrics`] for convenient access from crate root.
+pub use metrics::Metrics;
+
+/// Re-export of [`metrics::MetricsSnapshot`] for convenient access from crate root.
+pub use metrics::MetricsSnapshot;
+
 /// A2A node: announce, discover, send/receive tasks over Waku.
 ///
 /// Uses SDS MessageChannel for reliable, causally-ordered delivery with
@@ -111,6 +118,8 @@ pub struct WakuA2ANode<T: Transport> {
     retry_config: Option<RetryConfig>,
     /// Atomic counter for round-robin delegation peer selection.
     round_robin_counter: AtomicUsize,
+    /// Operational metrics counters.
+    metrics: Metrics,
 }
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -153,6 +162,7 @@ impl<T: Transport> WakuA2ANode<T> {
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
             retry_config: None,
             round_robin_counter: AtomicUsize::new(0),
+            metrics: Metrics::new(),
         }
     }
 
@@ -203,6 +213,7 @@ impl<T: Transport> WakuA2ANode<T> {
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
             retry_config: None,
             round_robin_counter: AtomicUsize::new(0),
+            metrics: Metrics::new(),
         }
     }
 
@@ -250,6 +261,7 @@ impl<T: Transport> WakuA2ANode<T> {
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
             retry_config: None,
             round_robin_counter: AtomicUsize::new(0),
+            metrics: Metrics::new(),
         }
     }
 
@@ -381,6 +393,7 @@ impl<T: Transport> WakuA2ANode<T> {
             stream_chunks: std::sync::Mutex::new(HashMap::new()),
             retry_config: None,
             round_robin_counter: AtomicUsize::new(0),
+            metrics: Metrics::new(),
         }
     }
 
@@ -452,6 +465,11 @@ impl<T: Transport> WakuA2ANode<T> {
         &self.round_robin_counter
     }
 
+    /// Get a snapshot of the current operational metrics.
+    pub fn metrics(&self) -> metrics::MetricsSnapshot {
+        self.metrics.snapshot()
+    }
+
     /// Create a new conversation session with a peer.
     pub fn create_session(&self, peer_pubkey: &str) -> Session {
         let session = Session::new(peer_pubkey);
@@ -460,6 +478,7 @@ impl<T: Transport> WakuA2ANode<T> {
             .lock()
             .unwrap()
             .insert(id.clone(), session.clone());
+        Metrics::inc(&self.metrics.sessions_created);
         session
     }
 
