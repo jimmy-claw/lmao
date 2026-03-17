@@ -54,6 +54,8 @@ pub enum Commands {
     },
     /// Check Waku node connectivity and health
     Health,
+    /// Display operational metrics counters
+    Metrics,
 }
 
 #[derive(Debug, Subcommand)]

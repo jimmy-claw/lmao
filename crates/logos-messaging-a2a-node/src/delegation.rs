@@ -8,6 +8,7 @@ use logos_messaging_a2a_transport::Transport;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::metrics::Metrics;
 use crate::{NodeError, Result, WakuA2ANode};
 
 /// Default timeout for delegation when none is specified (30 seconds).
@@ -66,6 +67,7 @@ impl<T: Transport> WakuA2ANode<T> {
             }
         };
 
+        Metrics::inc(&self.metrics.delegations_sent);
         self.delegate_to_peer(request, &peer_id, timeout_secs).await
     }
 
@@ -105,6 +107,7 @@ impl<T: Transport> WakuA2ANode<T> {
         }
 
         let mut results = Vec::new();
+        Metrics::inc_by(&self.metrics.delegations_sent, peer_ids.len() as u64);
         for peer_id in peer_ids {
             let result = self.delegate_to_peer(request, &peer_id, timeout_secs).await;
             match result {

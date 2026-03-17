@@ -4,6 +4,7 @@ use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, PresenceAnnouncem
 use logos_messaging_a2a_transport::Transport;
 use std::collections::HashMap;
 
+use crate::metrics::Metrics;
 use crate::presence;
 use crate::{NodeError, Result, WakuA2ANode};
 
@@ -19,6 +20,8 @@ impl<T: Transport> WakuA2ANode<T> {
             .transport()
             .publish(topics::DISCOVERY, &payload)
             .await?;
+        Metrics::inc(&self.metrics.announcements_sent);
+        Metrics::inc(&self.metrics.messages_published);
         tracing::info!(name = %self.card.name, pubkey = %self.pubkey(), "Announced");
         Ok(())
     }
@@ -45,6 +48,7 @@ impl<T: Transport> WakuA2ANode<T> {
             .transport()
             .unsubscribe(topics::DISCOVERY)
             .await;
+        Metrics::inc_by(&self.metrics.discoveries, cards.len() as u64);
         Ok(cards)
     }
 
@@ -144,6 +148,8 @@ impl<T: Transport> WakuA2ANode<T> {
             .transport()
             .publish(topics::PRESENCE, &payload)
             .await?;
+        Metrics::inc(&self.metrics.announcements_sent);
+        Metrics::inc(&self.metrics.messages_published);
         tracing::info!(name = %self.card.name, ttl_secs, "Presence announced");
         Ok(())
     }
@@ -173,6 +179,7 @@ impl<T: Transport> WakuA2ANode<T> {
                         continue;
                     }
                     self.peer_map.update(&ann);
+                    Metrics::inc(&self.metrics.peers_discovered);
                     tracing::info!(
                         name = %ann.name,
                         agent_id = %&ann.agent_id[..8.min(ann.agent_id.len())],

@@ -3,6 +3,7 @@
 use logos_messaging_a2a_core::{topics, A2AEnvelope, Task, TaskStreamChunk};
 use logos_messaging_a2a_transport::Transport;
 
+use crate::metrics::Metrics;
 use crate::{Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -25,6 +26,8 @@ impl<T: Transport> WakuA2ANode<T> {
             let payload = serde_json::to_vec(&envelope)?;
             self.channel.transport().publish(&topic, &payload).await?;
         }
+        Metrics::inc_by(&self.metrics.stream_chunks_sent, total as u64);
+        Metrics::inc_by(&self.metrics.messages_published, total as u64);
         tracing::info!(task_id = %task.id, chunks = total, "Streamed chunks for task");
         Ok(())
     }
@@ -50,6 +53,11 @@ impl<T: Transport> WakuA2ANode<T> {
         }
 
         let _ = self.channel.transport().unsubscribe(&topic).await;
+
+        Metrics::inc_by(
+            &self.metrics.stream_chunks_received,
+            new_chunks.len() as u64,
+        );
 
         // Merge into the internal buffer
         let mut buffer = self.stream_chunks.lock().unwrap();

@@ -2,6 +2,7 @@ use logos_messaging_a2a_core::{A2AEnvelope, AgentCard, Message, Task};
 use logos_messaging_a2a_crypto::AgentIdentity;
 use logos_messaging_a2a_transport::Transport;
 
+use crate::metrics::Metrics;
 use crate::{NodeError, Result, WakuA2ANode};
 
 impl<T: Transport> WakuA2ANode<T> {
@@ -58,6 +59,7 @@ impl<T: Transport> WakuA2ANode<T> {
                 let session_key = identity.shared_key(&their_pubkey);
                 let task_json = serde_json::to_vec(task)?;
                 let encrypted = session_key.encrypt(&task_json)?;
+                Metrics::inc(&self.metrics.encryptions);
                 return Ok(A2AEnvelope::EncryptedTask {
                     encrypted,
                     sender_pubkey: identity.public_key_hex(),
@@ -77,6 +79,7 @@ impl<T: Transport> WakuA2ANode<T> {
         let their_pubkey = AgentIdentity::parse_public_key(sender_pubkey_hex)?;
         let session_key = identity.shared_key(&their_pubkey);
         let plaintext = session_key.decrypt(encrypted)?;
+        Metrics::inc(&self.metrics.decryptions);
         let task: Task = serde_json::from_slice(&plaintext)?;
         Ok(task)
     }
