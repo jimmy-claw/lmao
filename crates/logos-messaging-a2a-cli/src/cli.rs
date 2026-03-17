@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -56,6 +57,11 @@ pub enum Commands {
     Health,
     /// Display operational metrics counters
     Metrics,
+    /// Generate shell completions
+    Completion {
+        /// Shell to generate completions for
+        shell: Shell,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -932,6 +938,42 @@ mod tests {
             Commands::Health => {}
             _ => panic!("expected Health"),
         }
+    }
+
+    // ── Completion ──
+
+    #[test]
+    fn completion_bash_parses() {
+        let cli = try_parse(&["cli", "completion", "bash"]).unwrap();
+        match cli.command {
+            Commands::Completion { shell } => {
+                assert_eq!(shell, clap_complete::Shell::Bash);
+            }
+            _ => panic!("expected Completion"),
+        }
+    }
+
+    #[test]
+    fn completion_zsh_parses() {
+        let cli = try_parse(&["cli", "completion", "zsh"]).unwrap();
+        match cli.command {
+            Commands::Completion { shell } => {
+                assert_eq!(shell, clap_complete::Shell::Zsh);
+            }
+            _ => panic!("expected Completion"),
+        }
+    }
+
+    #[test]
+    fn completion_missing_shell_errors() {
+        let err = try_parse(&["cli", "completion"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn completion_invalid_shell_errors() {
+        let err = try_parse(&["cli", "completion", "nushell"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
     }
 
     #[test]
