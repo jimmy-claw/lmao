@@ -54,6 +54,8 @@ pub enum Commands {
     },
     /// Check Waku node connectivity and health
     Health,
+    /// Display node operational metrics (counters)
+    Metrics,
 }
 
 #[derive(Debug, Subcommand)]
@@ -949,5 +951,36 @@ mod tests {
         assert!(cli.json);
         assert!(cli.encrypt);
         assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/k.key")));
+    }
+
+    // ── Metrics ──
+
+    #[test]
+    fn metrics_parses() {
+        let cli = try_parse(&["cli", "metrics"]).unwrap();
+        match cli.command {
+            Commands::Metrics => {}
+            _ => panic!("expected Metrics"),
+        }
+    }
+
+    #[test]
+    fn metrics_with_json_flag() {
+        let cli = try_parse(&["cli", "--json", "metrics"]).unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Metrics => {}
+            _ => panic!("expected Metrics"),
+        }
+    }
+
+    #[test]
+    fn metrics_with_custom_waku_url() {
+        let cli = try_parse(&["cli", "--waku", "http://node:9090", "metrics"]).unwrap();
+        assert_eq!(cli.waku, "http://node:9090");
+        match cli.command {
+            Commands::Metrics => {}
+            _ => panic!("expected Metrics"),
+        }
     }
 }

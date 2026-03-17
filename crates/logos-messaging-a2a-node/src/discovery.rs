@@ -19,6 +19,7 @@ impl<T: Transport> WakuA2ANode<T> {
             .transport()
             .publish(topics::DISCOVERY, &payload)
             .await?;
+        self.metrics.inc_messages_published();
         tracing::info!(name = %self.card.name, pubkey = %self.pubkey(), "Announced");
         Ok(())
     }
@@ -40,6 +41,7 @@ impl<T: Transport> WakuA2ANode<T> {
             }
         }
 
+        self.metrics.inc_discovery_events(cards.len() as u64);
         let _ = self
             .channel
             .transport()
@@ -144,6 +146,8 @@ impl<T: Transport> WakuA2ANode<T> {
             .transport()
             .publish(topics::PRESENCE, &payload)
             .await?;
+        self.metrics.inc_presence_announcements();
+        self.metrics.inc_messages_published();
         tracing::info!(name = %self.card.name, ttl_secs, "Presence announced");
         Ok(())
     }

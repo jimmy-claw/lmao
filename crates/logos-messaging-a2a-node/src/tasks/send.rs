@@ -30,20 +30,33 @@ impl<T: Transport> WakuA2ANode<T> {
 
         // Use SDS reliable delivery — the SDS message_id (SHA256 of payload)
         // is used for ACK routing, not the task UUID.
-        let (_msg, acked) = if let Some(ref retry_cfg) = self.retry_config {
-            retry::RetryLayer::new(&self.channel, retry_cfg)
+        let result = if let Some(ref retry_cfg) = self.retry_config {
+            retry::RetryLayer::new(&self.channel, retry_cfg, &self.metrics)
                 .send_reliable(&topic, &payload)
-                .await?
+                .await
         } else {
-            self.channel.send_reliable(&topic, &payload).await?
+            self.channel
+                .send_reliable(&topic, &payload)
+                .await
+                .map_err(Into::into)
         };
 
-        if acked {
-            tracing::info!(task_id = %task.id, "Task sent and ACKed");
-        } else {
-            tracing::warn!(task_id = %task.id, "Task sent but no ACK received");
+        match result {
+            Ok((_msg, acked)) => {
+                self.metrics.inc_tasks_sent();
+                self.metrics.inc_messages_published();
+                if acked {
+                    tracing::info!(task_id = %task.id, "Task sent and ACKed");
+                } else {
+                    tracing::warn!(task_id = %task.id, "Task sent but no ACK received");
+                }
+                Ok(acked)
+            }
+            Err(e) => {
+                self.metrics.inc_tasks_failed();
+                Err(e)
+            }
         }
-        Ok(acked)
     }
 
     /// Send a text message within an existing session.

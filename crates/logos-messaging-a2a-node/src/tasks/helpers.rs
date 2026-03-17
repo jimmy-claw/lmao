@@ -58,6 +58,7 @@ impl<T: Transport> WakuA2ANode<T> {
                 let session_key = identity.shared_key(&their_pubkey);
                 let task_json = serde_json::to_vec(task)?;
                 let encrypted = session_key.encrypt(&task_json)?;
+                self.metrics.inc_encryption_ops();
                 return Ok(A2AEnvelope::EncryptedTask {
                     encrypted,
                     sender_pubkey: identity.public_key_hex(),
@@ -78,6 +79,7 @@ impl<T: Transport> WakuA2ANode<T> {
         let session_key = identity.shared_key(&their_pubkey);
         let plaintext = session_key.decrypt(encrypted)?;
         let task: Task = serde_json::from_slice(&plaintext)?;
+        self.metrics.inc_encryption_ops();
         Ok(task)
     }
 }

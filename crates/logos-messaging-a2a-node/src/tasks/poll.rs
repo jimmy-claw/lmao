@@ -77,6 +77,8 @@ impl<T: Transport> WakuA2ANode<T> {
         }
         let tasks = verified_tasks;
 
+        self.metrics.inc_tasks_received(tasks.len() as u64);
+
         // Track incoming tasks in their sessions
         for task in &tasks {
             if let Some(ref sid) = task.session_id {

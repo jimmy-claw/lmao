@@ -24,6 +24,7 @@ impl<T: Transport> WakuA2ANode<T> {
             let envelope = A2AEnvelope::StreamChunk(chunk);
             let payload = serde_json::to_vec(&envelope)?;
             self.channel.transport().publish(&topic, &payload).await?;
+            self.metrics.inc_messages_published();
         }
         tracing::info!(task_id = %task.id, chunks = total, "Streamed chunks for task");
         Ok(())

@@ -25,6 +25,7 @@ impl<T: Transport> WakuA2ANode<T> {
 
         // Use causal send for responses (maintains ordering, no retransmit block)
         self.channel.send(&topic, &payload).await?;
+        self.metrics.inc_messages_published();
 
         tracing::info!(task_id = %task.id, "Responded to task");
         Ok(())

@@ -9,6 +9,7 @@ use logos_messaging_a2a_transport::sds::MessageChannel;
 use logos_messaging_a2a_transport::Transport;
 use std::time::Duration;
 
+use crate::metrics::Metrics;
 use crate::{NodeError, Result};
 
 /// Retry wrapper around [`MessageChannel::send_reliable`].
@@ -21,12 +22,21 @@ use crate::{NodeError, Result};
 pub struct RetryLayer<'a, T: Transport> {
     channel: &'a MessageChannel<T>,
     config: &'a RetryConfig,
+    metrics: &'a Metrics,
 }
 
 impl<'a, T: Transport> RetryLayer<'a, T> {
     /// Create a new retry layer wrapping the given channel with the specified config.
-    pub fn new(channel: &'a MessageChannel<T>, config: &'a RetryConfig) -> Self {
-        Self { channel, config }
+    pub fn new(
+        channel: &'a MessageChannel<T>,
+        config: &'a RetryConfig,
+        metrics: &'a Metrics,
+    ) -> Self {
+        Self {
+            channel,
+            config,
+            metrics,
+        }
     }
 
     /// Send with exponential-backoff retry on failure.
@@ -41,6 +51,7 @@ impl<'a, T: Transport> RetryLayer<'a, T> {
         let mut last_err = None;
 
         for attempt in 0..self.config.max_attempts {
+            self.metrics.inc_retry_attempts();
             match self.channel.send_reliable(topic, payload).await {
                 Ok(result) => return Ok(result),
                 Err(e) => {
@@ -60,6 +71,7 @@ impl<'a, T: Transport> RetryLayer<'a, T> {
             }
         }
 
+        self.metrics.inc_retry_exhaustions();
         Err(NodeError::Other(format!(
             "all {} attempts failed: {}",
             self.config.max_attempts,
@@ -114,8 +126,9 @@ mod tests {
     fn make_layer<'a>(
         channel: &'a MessageChannel<DummyTransport>,
         config: &'a RetryConfig,
+        metrics: &'a Metrics,
     ) -> RetryLayer<'a, DummyTransport> {
-        RetryLayer::new(channel, config)
+        RetryLayer::new(channel, config, metrics)
     }
 
     #[test]
@@ -127,7 +140,8 @@ mod tests {
             jitter: false,
         };
         let channel = MessageChannel::new("test".into(), "test-pk".into(), DummyTransport);
-        let layer = make_layer(&channel, &config);
+        let metrics = Metrics::new();
+        let layer = make_layer(&channel, &config, &metrics);
         assert_eq!(layer.compute_delay(0), Duration::from_millis(100));
     }
 
@@ -140,7 +154,8 @@ mod tests {
             jitter: false,
         };
         let channel = MessageChannel::new("test".into(), "test-pk".into(), DummyTransport);
-        let layer = make_layer(&channel, &config);
+        let metrics = Metrics::new();
+        let layer = make_layer(&channel, &config, &metrics);
 
         assert_eq!(layer.compute_delay(0), Duration::from_millis(100));
         assert_eq!(layer.compute_delay(1), Duration::from_millis(200));
@@ -158,7 +173,8 @@ mod tests {
             jitter: false,
         };
         let channel = MessageChannel::new("test".into(), "test-pk".into(), DummyTransport);
-        let layer = make_layer(&channel, &config);
+        let metrics = Metrics::new();
+        let layer = make_layer(&channel, &config, &metrics);
 
         // attempt 0: 1000
         assert_eq!(layer.compute_delay(0), Duration::from_millis(1000));
@@ -181,7 +197,8 @@ mod tests {
             jitter: true,
         };
         let channel = MessageChannel::new("test".into(), "test-pk".into(), DummyTransport);
-        let layer = make_layer(&channel, &config);
+        let metrics = Metrics::new();
+        let layer = make_layer(&channel, &config, &metrics);
 
         // With jitter: delay = (base + rand(0..=base)) / 2
         // For attempt 0, base = 1000
@@ -203,7 +220,8 @@ mod tests {
             jitter: false,
         };
         let channel = MessageChannel::new("test".into(), "test-pk".into(), DummyTransport);
-        let layer = make_layer(&channel, &config);
+        let metrics = Metrics::new();
+        let layer = make_layer(&channel, &config, &metrics);
 
         // Very high attempt should be capped, not overflow
         let delay = layer.compute_delay(50);
@@ -219,7 +237,8 @@ mod tests {
             jitter: false,
         };
         let channel = MessageChannel::new("test".into(), "test-pk".into(), DummyTransport);
-        let layer = make_layer(&channel, &config);
+        let metrics = Metrics::new();
+        let layer = make_layer(&channel, &config, &metrics);
 
         assert_eq!(layer.compute_delay(0), Duration::from_millis(0));
         assert_eq!(layer.compute_delay(5), Duration::from_millis(0));
