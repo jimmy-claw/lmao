@@ -1,6 +1,7 @@
 mod agent;
 mod cli;
 mod common;
+mod completion;
 mod health;
 mod metrics;
 mod presence;
@@ -37,5 +38,9 @@ async fn main() -> Result<()> {
         Commands::Session { action } => session::handle(action, transport, &identity, json).await,
         Commands::Health => health::handle(&cli.waku, json).await,
         Commands::Metrics => metrics::handle(transport, &identity, json).await,
+        Commands::Completion { shell } => {
+            completion::handle(shell);
+            Ok(())
+        }
     }
 }
