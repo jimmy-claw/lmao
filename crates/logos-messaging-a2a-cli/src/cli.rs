@@ -27,6 +27,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Path to a TOML configuration file.
+    /// Default lookup: ./lmao.toml → ~/.config/lmao/config.toml
+    #[arg(long, global = true)]
+    pub config: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -64,6 +69,23 @@ pub enum Commands {
     },
     /// Display agent identity and topic configuration
     Info,
+    /// Manage configuration file
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Generate a default configuration file
+    Init {
+        /// Output path (default: ~/.config/lmao/config.toml)
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Display the effective (merged) configuration
+    Show,
 }
 
 #[derive(Debug, Subcommand)]
@@ -995,5 +1017,62 @@ mod tests {
         assert!(cli.json);
         assert!(cli.encrypt);
         assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/k.key")));
+    }
+
+    // ── Config subcommand ──
+
+    #[test]
+    fn config_init_parses() {
+        let cli = try_parse(&["cli", "config", "init"]).unwrap();
+        match cli.command {
+            Commands::Config {
+                action: ConfigAction::Init { path },
+            } => {
+                assert!(path.is_none());
+            }
+            _ => panic!("expected Config Init"),
+        }
+    }
+
+    #[test]
+    fn config_init_with_path() {
+        let cli = try_parse(&["cli", "config", "init", "--path", "/tmp/custom.toml"]).unwrap();
+        match cli.command {
+            Commands::Config {
+                action: ConfigAction::Init { path },
+            } => {
+                assert_eq!(path, Some(PathBuf::from("/tmp/custom.toml")));
+            }
+            _ => panic!("expected Config Init"),
+        }
+    }
+
+    #[test]
+    fn config_show_parses() {
+        let cli = try_parse(&["cli", "config", "show"]).unwrap();
+        match cli.command {
+            Commands::Config {
+                action: ConfigAction::Show,
+            } => {}
+            _ => panic!("expected Config Show"),
+        }
+    }
+
+    #[test]
+    fn config_show_with_json() {
+        let cli = try_parse(&["cli", "--json", "config", "show"]).unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Config {
+                action: ConfigAction::Show,
+            } => {}
+            _ => panic!("expected Config Show"),
+        }
+    }
+
+    #[test]
+    fn global_config_flag() {
+        let cli = try_parse(&["cli", "--config", "/tmp/my.toml", "agent", "discover"]).unwrap();
+        assert_eq!(cli.config, Some(PathBuf::from("/tmp/my.toml")));
     }
 }

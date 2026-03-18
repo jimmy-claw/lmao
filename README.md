@@ -300,6 +300,44 @@ cargo run -p logos-messaging-a2a-cli -- --waku http://localhost:8645 <command>
 | `presence announce --name <n>` | Announce this agent on the presence topic |
 | `presence discover [--capability <c>]` | Listen for presence announcements |
 | `presence peers [--capability <c>]` | Discover and list unique peers |
+| `config init [--path <p>]` | Generate a default configuration file |
+| `config show` | Display the effective (merged) configuration |
+
+### Configuration File
+
+Instead of passing flags every time, you can create a TOML configuration file.
+
+**Lookup order:** `./lmao.toml` → `~/.config/lmao/config.toml`
+
+Override with `--config <path>` to use a custom location.
+
+**Generate a default config:**
+
+```bash
+logos-messaging-a2a config init
+# Or specify a custom path:
+logos-messaging-a2a config init --path ./lmao.toml
+```
+
+**Example `lmao.toml`:**
+
+```toml
+waku_url = "http://localhost:8645"
+keyfile = "~/.config/lmao/identity.key"
+encrypt = true
+json = false
+
+[agent]
+name = "my-agent"
+capabilities = ["text", "code", "summarize"]
+description = "My LMAO agent"
+
+[presence]
+ttl = 300
+auto_announce = true
+```
+
+**Precedence:** CLI flags always override config file values. Config file values override built-in defaults.
 
 ## Encryption
 
