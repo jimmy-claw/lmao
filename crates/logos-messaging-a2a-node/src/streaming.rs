@@ -288,7 +288,340 @@ mod tests {
         assert!(chunks.is_empty());
     }
 
-    // ── Additional streaming tests ──
+    // --- metrics tests ---
+
+    #[tokio::test]
+    async fn respond_stream_increments_metrics() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("streamer", transport.clone());
+        let task = Task::new(node.pubkey(), "02recipient", "do something");
+
+        let chunks = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        node.respond_stream(&task, chunks).await.unwrap();
+
+        let m = node.metrics();
+        assert_eq!(m.stream_chunks_sent, 3);
+        assert_eq!(m.messages_published, 3);
+    }
+
+    #[tokio::test]
+    async fn poll_stream_chunks_increments_metrics() {
+        let transport = InMemoryTransport::new();
+        let task_id = "metrics-task";
+        let stream_topic = topics::stream_topic(task_id);
+
+        for i in 0..2 {
+            let chunk = TaskStreamChunk {
+                task_id: task_id.to_string(),
+                chunk_index: i,
+                text: format!("chunk-{i}"),
+                is_final: i == 1,
+            };
+            let envelope = A2AEnvelope::StreamChunk(chunk);
+            let payload = serde_json::to_vec(&envelope).unwrap();
+            transport.publish(&stream_topic, &payload).await.unwrap();
+        }
+
+        let node = make_node_with_transport("receiver", transport);
+        node.poll_stream_chunks(task_id).await.unwrap();
+
+        assert_eq!(node.metrics().stream_chunks_received, 2);
+    }
+
+    // --- multiple polls accumulate ---
+
+    #[tokio::test]
+    async fn multiple_polls_accumulate_chunks() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("receiver", transport.clone());
+        let task_id = "accumulate-task";
+        let stream_topic = topics::stream_topic(task_id);
+
+        // First batch
+        let chunk0 = TaskStreamChunk {
+            task_id: task_id.to_string(),
+            chunk_index: 0,
+            text: "Hello ".to_string(),
+            is_final: false,
+        };
+        let payload = serde_json::to_vec(&A2AEnvelope::StreamChunk(chunk0)).unwrap();
+        transport.publish(&stream_topic, &payload).await.unwrap();
+
+        let result1 = node.poll_stream_chunks(task_id).await.unwrap();
+        assert_eq!(result1.len(), 1);
+
+        // Second batch
+        let chunk1 = TaskStreamChunk {
+            task_id: task_id.to_string(),
+            chunk_index: 1,
+            text: "world!".to_string(),
+            is_final: true,
+        };
+        let payload = serde_json::to_vec(&A2AEnvelope::StreamChunk(chunk1)).unwrap();
+        transport.publish(&stream_topic, &payload).await.unwrap();
+
+        let result2 = node.poll_stream_chunks(task_id).await.unwrap();
+        assert_eq!(result2.len(), 2);
+        assert_eq!(result2[0].text, "Hello ");
+        assert_eq!(result2[1].text, "world!");
+        assert!(result2[1].is_final);
+    }
+
+    // --- end-to-end: respond_stream -> poll -> reassemble ---
+
+    #[tokio::test]
+    async fn end_to_end_stream_roundtrip() {
+        let transport = InMemoryTransport::new();
+        let sender = make_node_with_transport("sender", transport.clone());
+        let receiver = make_node_with_transport("receiver", transport.clone());
+
+        let task = Task::new(sender.pubkey(), receiver.pubkey(), "stream me");
+
+        sender
+            .respond_stream(
+                &task,
+                vec![
+                    "The ".to_string(),
+                    "quick ".to_string(),
+                    "brown ".to_string(),
+                    "fox".to_string(),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let chunks = receiver.poll_stream_chunks(&task.id).await.unwrap();
+        assert_eq!(chunks.len(), 4);
+        assert!(chunks[3].is_final);
+
+        let reassembled = receiver.reassemble_stream(&task.id);
+        assert_eq!(reassembled, Some("The quick brown fox".to_string()));
+    }
+
+    // --- two tasks don't interfere ---
+
+    #[tokio::test]
+    async fn separate_tasks_have_independent_streams() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("streamer", transport.clone());
+        let receiver = make_node_with_transport("receiver", transport.clone());
+
+        let task_a = Task::new(node.pubkey(), receiver.pubkey(), "task A");
+        let task_b = Task::new(node.pubkey(), receiver.pubkey(), "task B");
+
+        node.respond_stream(&task_a, vec!["AAA".to_string()])
+            .await
+            .unwrap();
+        node.respond_stream(&task_b, vec!["BBB".to_string()])
+            .await
+            .unwrap();
+
+        receiver.poll_stream_chunks(&task_a.id).await.unwrap();
+        receiver.poll_stream_chunks(&task_b.id).await.unwrap();
+
+        assert_eq!(
+            receiver.reassemble_stream(&task_a.id),
+            Some("AAA".to_string())
+        );
+        assert_eq!(
+            receiver.reassemble_stream(&task_b.id),
+            Some("BBB".to_string())
+        );
+    }
+
+    // --- non-StreamChunk envelopes ignored on stream topic ---
+
+    #[tokio::test]
+    async fn poll_stream_ignores_non_stream_chunk_envelopes() {
+        let transport = InMemoryTransport::new();
+        let task_id = "filter-task";
+        let stream_topic = topics::stream_topic(task_id);
+
+        // Inject a Task envelope on the stream topic
+        let task = Task::new("from", "to", "hello");
+        let envelope = A2AEnvelope::Task(task);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(&stream_topic, &payload).await.unwrap();
+
+        // Also inject garbage
+        transport
+            .publish(&stream_topic, b"not json at all")
+            .await
+            .unwrap();
+
+        let node = make_node_with_transport("receiver", transport);
+        let chunks = node.poll_stream_chunks(task_id).await.unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    // --- empty chunks vec ---
+
+    #[tokio::test]
+    async fn respond_stream_empty_chunks_is_noop() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("streamer", transport.clone());
+        let task = Task::new(node.pubkey(), "02recipient", "do something");
+
+        // Empty vec should not panic
+        node.respond_stream(&task, vec![]).await.unwrap();
+
+        let m = node.metrics();
+        assert_eq!(m.stream_chunks_sent, 0);
+        assert_eq!(m.messages_published, 0);
+    }
+
+    // --- reassemble edge cases ---
+
+    #[tokio::test]
+    async fn reassemble_returns_none_for_empty_buffer() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("receiver", transport.clone());
+
+        // Poll with no messages — creates empty buffer entry
+        let task_id = "empty-buffer-task";
+        node.poll_stream_chunks(task_id).await.unwrap();
+        assert!(node.reassemble_stream(task_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn reassemble_single_final_chunk() {
+        let transport = InMemoryTransport::new();
+        let task_id = "single-final";
+        let stream_topic = topics::stream_topic(task_id);
+
+        let chunk = TaskStreamChunk {
+            task_id: task_id.to_string(),
+            chunk_index: 0,
+            text: "complete".to_string(),
+            is_final: true,
+        };
+        let payload = serde_json::to_vec(&A2AEnvelope::StreamChunk(chunk)).unwrap();
+        transport.publish(&stream_topic, &payload).await.unwrap();
+
+        let node = make_node_with_transport("receiver", transport);
+        node.poll_stream_chunks(task_id).await.unwrap();
+        assert_eq!(
+            node.reassemble_stream(task_id),
+            Some("complete".to_string())
+        );
+    }
+
+    // --- large number of chunks ---
+
+    #[tokio::test]
+    async fn respond_stream_many_chunks() {
+        let transport = InMemoryTransport::new();
+        let sender = make_node_with_transport("sender", transport.clone());
+        let receiver = make_node_with_transport("receiver", transport.clone());
+        let task = Task::new(sender.pubkey(), receiver.pubkey(), "big stream");
+
+        let chunks: Vec<String> = (0..100).map(|i| format!("{i} ")).collect();
+        sender.respond_stream(&task, chunks).await.unwrap();
+
+        let received = receiver.poll_stream_chunks(&task.id).await.unwrap();
+        assert_eq!(received.len(), 100);
+        assert_eq!(received[0].chunk_index, 0);
+        assert_eq!(received[99].chunk_index, 99);
+        assert!(received[99].is_final);
+        assert!(!received[98].is_final);
+
+        let reassembled = receiver.reassemble_stream(&task.id).unwrap();
+        let expected: String = (0..100).map(|i| format!("{i} ")).collect();
+        assert_eq!(reassembled, expected);
+
+        assert_eq!(sender.metrics().stream_chunks_sent, 100);
+    }
+
+    // --- respond_stream chunk_index and is_final correctness ---
+
+    #[tokio::test]
+    async fn respond_stream_sets_correct_indices_and_final_flag() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("streamer", transport.clone());
+        let task = Task::new(node.pubkey(), "02recipient", "test");
+
+        node.respond_stream(&task, vec!["a".into(), "b".into(), "c".into()])
+            .await
+            .unwrap();
+
+        let stream_topic = topics::stream_topic(&task.id);
+        let mut rx = transport.subscribe(&stream_topic).await.unwrap();
+
+        let expected = [(0u32, "a", false), (1, "b", false), (2, "c", true)];
+        for (idx, text, is_final) in expected {
+            let msg = rx.try_recv().unwrap();
+            if let A2AEnvelope::StreamChunk(chunk) = serde_json::from_slice(&msg).unwrap() {
+                assert_eq!(chunk.chunk_index, idx);
+                assert_eq!(chunk.text, text);
+                assert_eq!(chunk.is_final, is_final);
+                assert_eq!(chunk.task_id, task.id);
+            } else {
+                panic!("expected StreamChunk");
+            }
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    // --- poll dedup across multiple polls ---
+
+    #[tokio::test]
+    async fn poll_deduplicates_across_multiple_polls() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("receiver", transport.clone());
+        let task_id = "dedup-multi";
+        let stream_topic = topics::stream_topic(task_id);
+
+        // Inject chunk 0
+        let chunk0 = TaskStreamChunk {
+            task_id: task_id.to_string(),
+            chunk_index: 0,
+            text: "first".to_string(),
+            is_final: false,
+        };
+        let payload = serde_json::to_vec(&A2AEnvelope::StreamChunk(chunk0.clone())).unwrap();
+        transport.publish(&stream_topic, &payload).await.unwrap();
+
+        // First poll picks it up
+        let r1 = node.poll_stream_chunks(task_id).await.unwrap();
+        assert_eq!(r1.len(), 1);
+
+        // Inject same chunk 0 again + new chunk 1
+        transport.publish(&stream_topic, &payload).await.unwrap();
+        let chunk1 = TaskStreamChunk {
+            task_id: task_id.to_string(),
+            chunk_index: 1,
+            text: "second".to_string(),
+            is_final: true,
+        };
+        let payload1 = serde_json::to_vec(&A2AEnvelope::StreamChunk(chunk1)).unwrap();
+        transport.publish(&stream_topic, &payload1).await.unwrap();
+
+        // Second poll should dedup chunk 0 and add chunk 1
+        let r2 = node.poll_stream_chunks(task_id).await.unwrap();
+        assert_eq!(r2.len(), 2);
+        assert_eq!(r2[0].text, "first");
+        assert_eq!(r2[1].text, "second");
+    }
+
+    // --- stream topic format ---
+
+    #[tokio::test]
+    async fn respond_stream_uses_correct_topic() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("streamer", transport.clone());
+        let task = Task::new(node.pubkey(), "02recipient", "test");
+
+        node.respond_stream(&task, vec!["hello".into()])
+            .await
+            .unwrap();
+
+        // Verify published on the correct stream topic
+        let expected_topic = format!("/waku-a2a/1/stream/{}/proto", task.id);
+        let mut rx = transport.subscribe(&expected_topic).await.unwrap();
+        assert!(rx.try_recv().is_ok());
+    }
+
+    // ── Additional streaming tests (PR #136) ──
 
     #[tokio::test]
     async fn respond_stream_marks_only_last_chunk_as_final() {
@@ -322,51 +655,6 @@ mod tests {
                 _ => panic!("Expected StreamChunk"),
             }
         }
-    }
-
-    #[tokio::test]
-    async fn respond_stream_increments_metrics() {
-        let transport = InMemoryTransport::new();
-        let node = make_node_with_transport("streamer", transport);
-        let task = Task::new(node.pubkey(), "02recipient", "do something");
-
-        let before = node.metrics();
-        assert_eq!(before.stream_chunks_sent, 0);
-        assert_eq!(before.messages_published, 0);
-
-        let chunks = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        node.respond_stream(&task, chunks).await.unwrap();
-
-        let after = node.metrics();
-        assert_eq!(after.stream_chunks_sent, 3);
-        assert_eq!(after.messages_published, 3);
-    }
-
-    #[tokio::test]
-    async fn poll_stream_chunks_increments_metrics() {
-        let transport = InMemoryTransport::new();
-        let task_id = "metric-task";
-        let stream_topic = topics::stream_topic(task_id);
-
-        let chunk = TaskStreamChunk {
-            task_id: task_id.to_string(),
-            chunk_index: 0,
-            text: "data".to_string(),
-            is_final: true,
-        };
-        let envelope = A2AEnvelope::StreamChunk(chunk);
-        let payload = serde_json::to_vec(&envelope).unwrap();
-        transport.publish(&stream_topic, &payload).await.unwrap();
-
-        let node = make_node_with_transport("receiver", transport);
-
-        let before = node.metrics();
-        assert_eq!(before.stream_chunks_received, 0);
-
-        node.poll_stream_chunks(task_id).await.unwrap();
-
-        let after = node.metrics();
-        assert_eq!(after.stream_chunks_received, 1);
     }
 
     #[tokio::test]

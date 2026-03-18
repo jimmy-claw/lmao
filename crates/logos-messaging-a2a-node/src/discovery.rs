@@ -447,7 +447,7 @@ mod signed_presence_tests {
 }
 
 #[cfg(test)]
-mod discovery_tests {
+mod announce_and_discover_tests {
     use crate::WakuA2ANode;
     use logos_messaging_a2a_core::{topics, A2AEnvelope, AgentCard, PresenceAnnouncement};
     use logos_messaging_a2a_transport::memory::InMemoryTransport;
@@ -455,30 +455,34 @@ mod discovery_tests {
     use logos_messaging_a2a_transport::Transport;
     use std::time::Duration;
 
-    fn fast_config() -> ChannelConfig {
-        ChannelConfig {
-            ack_timeout: Duration::from_millis(1),
-            max_retries: 0,
-            ..Default::default()
-        }
-    }
-
-    fn make_node(name: &str, transport: InMemoryTransport) -> WakuA2ANode<InMemoryTransport> {
-        WakuA2ANode::with_config(
+    fn make_node(name: &str) -> WakuA2ANode<InMemoryTransport> {
+        let transport = InMemoryTransport::new();
+        WakuA2ANode::new(
             name,
             &format!("{name} agent"),
             vec!["test".into()],
             transport,
-            fast_config(),
         )
     }
 
-    // ── announce tests ──
+    fn make_node_with_transport(
+        name: &str,
+        transport: InMemoryTransport,
+    ) -> WakuA2ANode<InMemoryTransport> {
+        WakuA2ANode::new(
+            name,
+            &format!("{name} agent"),
+            vec!["test".into()],
+            transport,
+        )
+    }
+
+    // --- announce() tests ---
 
     #[tokio::test]
     async fn announce_publishes_agent_card_to_discovery_topic() {
         let transport = InMemoryTransport::new();
-        let node = make_node("echo", transport.clone());
+        let node = make_node_with_transport("echo", transport.clone());
 
         node.announce().await.unwrap();
 
@@ -488,16 +492,16 @@ mod discovery_tests {
         match envelope {
             A2AEnvelope::AgentCard(card) => {
                 assert_eq!(card.name, "echo");
-                assert_eq!(card.public_key, node.pubkey());
+                assert_eq!(card.public_key, node.card.public_key);
+                assert_eq!(card.capabilities, vec!["test"]);
             }
-            _ => panic!("Expected AgentCard envelope"),
+            other => panic!("expected AgentCard, got {:?}", other),
         }
     }
 
     #[tokio::test]
     async fn announce_increments_metrics() {
-        let transport = InMemoryTransport::new();
-        let node = make_node("metriced", transport);
+        let node = make_node("echo");
 
         let before = node.metrics();
         assert_eq!(before.announcements_sent, 0);
@@ -511,9 +515,450 @@ mod discovery_tests {
     }
 
     #[tokio::test]
+    async fn announce_multiple_times_publishes_multiple_messages() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("echo", transport.clone());
+
+        node.announce().await.unwrap();
+        node.announce().await.unwrap();
+        node.announce().await.unwrap();
+
+        let mut rx = transport.subscribe(topics::DISCOVERY).await.unwrap();
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 3);
+        assert_eq!(node.metrics().announcements_sent, 3);
+    }
+
+    // --- discover() tests ---
+
+    #[tokio::test]
+    async fn discover_returns_other_agents_cards() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        alice.announce().await.unwrap();
+
+        let cards = bob.discover().await.unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].name, "alice");
+        assert_eq!(cards[0].public_key, alice.card.public_key);
+    }
+
+    #[tokio::test]
+    async fn discover_excludes_self() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("self-announcer", transport.clone());
+
+        node.announce().await.unwrap();
+
+        let cards = node.discover().await.unwrap();
+        assert!(cards.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discover_multiple_agents() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+        let carol = make_node_with_transport("carol", transport.clone());
+        let discoverer = make_node_with_transport("discoverer", transport.clone());
+
+        alice.announce().await.unwrap();
+        bob.announce().await.unwrap();
+        carol.announce().await.unwrap();
+
+        let cards = discoverer.discover().await.unwrap();
+        assert_eq!(cards.len(), 3);
+
+        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"alice"));
+        assert!(names.contains(&"bob"));
+        assert!(names.contains(&"carol"));
+    }
+
+    #[tokio::test]
+    async fn discover_empty_when_no_messages() {
+        let node = make_node("lonely");
+        let cards = node.discover().await.unwrap();
+        assert!(cards.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discover_increments_metrics() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+        let discoverer = make_node_with_transport("discoverer", transport.clone());
+
+        alice.announce().await.unwrap();
+        bob.announce().await.unwrap();
+
+        discoverer.discover().await.unwrap();
+        assert_eq!(discoverer.metrics().discoveries, 2);
+    }
+
+    #[tokio::test]
+    async fn discover_ignores_non_agent_card_envelopes() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("discoverer", transport.clone());
+
+        // Inject a non-AgentCard envelope onto the discovery topic
+        let task = logos_messaging_a2a_core::Task::new("from", "to", "hello");
+        let envelope = A2AEnvelope::Task(task);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport
+            .publish(topics::DISCOVERY, &payload)
+            .await
+            .unwrap();
+
+        // Also inject garbage bytes
+        transport
+            .publish(topics::DISCOVERY, b"not valid json")
+            .await
+            .unwrap();
+
+        let cards = node.discover().await.unwrap();
+        assert!(cards.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discover_zero_discoveries_metric_when_empty() {
+        let node = make_node("lonely");
+        node.discover().await.unwrap();
+        assert_eq!(node.metrics().discoveries, 0);
+    }
+
+    // --- announce_presence / announce_presence_with_ttl tests ---
+
+    #[tokio::test]
+    async fn announce_presence_with_default_ttl() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        alice.announce_presence().await.unwrap();
+
+        let count = bob.poll_presence().await.unwrap();
+        assert_eq!(count, 1);
+        let peers = bob.peers().all_live();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].1.ttl_secs, 300);
+    }
+
+    #[tokio::test]
+    async fn announce_presence_with_custom_ttl() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        alice.announce_presence_with_ttl(60).await.unwrap();
+
+        let count = bob.poll_presence().await.unwrap();
+        assert_eq!(count, 1);
+        let peers = bob.peers().all_live();
+        assert_eq!(peers[0].1.ttl_secs, 60);
+    }
+
+    #[tokio::test]
+    async fn announce_presence_increments_metrics() {
+        let node = make_node("echo");
+
+        node.announce_presence().await.unwrap();
+
+        let m = node.metrics();
+        assert_eq!(m.announcements_sent, 1);
+        assert_eq!(m.messages_published, 1);
+    }
+
+    #[tokio::test]
+    async fn announce_presence_includes_capabilities_and_topic() {
+        let transport = InMemoryTransport::new();
+        let alice = WakuA2ANode::new(
+            "alice",
+            "alice agent",
+            vec!["summarize".into(), "code".into()],
+            transport.clone(),
+        );
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        alice.announce_presence().await.unwrap();
+        bob.poll_presence().await.unwrap();
+
+        let peers = bob.peers().all_live();
+        assert_eq!(peers[0].1.capabilities, vec!["summarize", "code"]);
+        assert_eq!(peers[0].1.waku_topic, topics::task_topic(alice.pubkey()));
+    }
+
+    // --- poll_presence tests ---
+
+    #[tokio::test]
+    async fn poll_presence_ignores_self() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("self", transport.clone());
+
+        node.announce_presence().await.unwrap();
+        let count = node.poll_presence().await.unwrap();
+        assert_eq!(count, 0);
+        assert!(node.peers().all_live().is_empty());
+    }
+
+    #[tokio::test]
+    async fn poll_presence_discovers_multiple_peers() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+        let carol = make_node_with_transport("carol", transport.clone());
+        let observer = make_node_with_transport("observer", transport.clone());
+
+        alice.announce_presence().await.unwrap();
+        bob.announce_presence().await.unwrap();
+        carol.announce_presence().await.unwrap();
+
+        let count = observer.poll_presence().await.unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(observer.peers().all_live().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn poll_presence_increments_peers_discovered_metric() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        alice.announce_presence().await.unwrap();
+        bob.poll_presence().await.unwrap();
+
+        assert_eq!(bob.metrics().peers_discovered, 1);
+    }
+
+    #[tokio::test]
+    async fn poll_presence_lazy_initializes_subscription() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        // First poll creates subscription, no messages yet
+        let count1 = bob.poll_presence().await.unwrap();
+        assert_eq!(count1, 0);
+
+        // Alice announces after bob's subscription exists
+        alice.announce_presence().await.unwrap();
+
+        // Second poll reuses subscription and finds alice
+        let count2 = bob.poll_presence().await.unwrap();
+        assert_eq!(count2, 1);
+    }
+
+    #[tokio::test]
+    async fn poll_presence_updates_existing_peer() {
+        let transport = InMemoryTransport::new();
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        alice.announce_presence_with_ttl(60).await.unwrap();
+        bob.poll_presence().await.unwrap();
+
+        let peers1 = bob.peers().all_live();
+        assert_eq!(peers1[0].1.ttl_secs, 60);
+
+        // Alice re-announces with different TTL
+        alice.announce_presence_with_ttl(120).await.unwrap();
+        bob.poll_presence().await.unwrap();
+
+        let peers2 = bob.peers().all_live();
+        assert_eq!(peers2.len(), 1);
+        assert_eq!(peers2[0].1.ttl_secs, 120);
+    }
+
+    #[tokio::test]
+    async fn poll_presence_returns_zero_when_no_messages() {
+        let node = make_node("lonely");
+        let count = node.poll_presence().await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn poll_presence_ignores_non_presence_envelopes() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("observer", transport.clone());
+
+        // Inject a Task envelope on the presence topic
+        let task = logos_messaging_a2a_core::Task::new("from", "to", "hello");
+        let envelope = A2AEnvelope::Task(task);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(topics::PRESENCE, &payload).await.unwrap();
+
+        let count = node.poll_presence().await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // --- peers() / find_peers_by_capability() integration tests ---
+
+    #[tokio::test]
+    async fn peers_returns_empty_peer_map_initially() {
+        let node = make_node("test");
+        assert!(node.peers().is_empty());
+        assert!(node.peers().all_live().is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_peers_by_capability_integration() {
+        let transport = InMemoryTransport::new();
+        let alice = WakuA2ANode::new(
+            "alice",
+            "alice agent",
+            vec!["summarize".into(), "text".into()],
+            transport.clone(),
+        );
+        let bob = WakuA2ANode::new("bob", "bob agent", vec!["code".into()], transport.clone());
+        let observer = WakuA2ANode::new(
+            "observer",
+            "observer agent",
+            vec!["observe".into()],
+            transport.clone(),
+        );
+
+        alice.announce_presence().await.unwrap();
+        bob.announce_presence().await.unwrap();
+        observer.poll_presence().await.unwrap();
+
+        let text_peers = observer.find_peers_by_capability("text");
+        assert_eq!(text_peers.len(), 1);
+        assert_eq!(text_peers[0].1.name, "alice");
+
+        let code_peers = observer.find_peers_by_capability("code");
+        assert_eq!(code_peers.len(), 1);
+        assert_eq!(code_peers[0].1.name, "bob");
+
+        let summarize_peers = observer.find_peers_by_capability("summarize");
+        assert_eq!(summarize_peers.len(), 1);
+
+        assert!(observer.find_peers_by_capability("nonexistent").is_empty());
+    }
+
+    // --- discover_all edge cases ---
+
+    #[tokio::test]
+    async fn discover_all_deduplicates_prefers_registry() {
+        use logos_messaging_a2a_core::registry::{AgentRegistry, InMemoryRegistry};
+        use std::sync::Arc;
+
+        let transport = InMemoryTransport::new();
+        let registry = Arc::new(InMemoryRegistry::new());
+
+        let alice = make_node_with_transport("alice", transport.clone());
+        let alice_pubkey = alice.card.public_key.clone();
+
+        // Alice announces via Waku
+        alice.announce().await.unwrap();
+
+        // Also register alice in registry with updated name
+        let reg_card = AgentCard {
+            name: "alice-registry".into(),
+            description: "from registry".into(),
+            version: "1.0.0".into(),
+            capabilities: vec!["test".into()],
+            public_key: alice_pubkey.clone(),
+            intro_bundle: None,
+        };
+        registry.register(reg_card).await.unwrap();
+
+        let discoverer = make_node_with_transport("discoverer", transport.clone());
+        let discoverer = discoverer.with_registry(registry);
+
+        let all = discoverer.discover_all().await.unwrap();
+        assert_eq!(all.len(), 1);
+        // Registry version should win (overwrites Waku)
+        assert_eq!(all[0].name, "alice-registry");
+    }
+
+    // --- announce + discover roundtrip ---
+
+    #[tokio::test]
+    async fn announce_discover_roundtrip_preserves_card_fields() {
+        let transport = InMemoryTransport::new();
+        let alice = WakuA2ANode::new(
+            "alice",
+            "Alice the summarizer",
+            vec!["summarize".into(), "text".into()],
+            transport.clone(),
+        );
+        let bob = make_node_with_transport("bob", transport.clone());
+
+        alice.announce().await.unwrap();
+        let cards = bob.discover().await.unwrap();
+
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].name, "alice");
+        assert_eq!(cards[0].description, "Alice the summarizer");
+        assert_eq!(cards[0].capabilities, vec!["summarize", "text"]);
+        assert_eq!(cards[0].public_key, alice.card.public_key);
+    }
+
+    // --- full lifecycle ---
+
+    #[tokio::test]
+    async fn full_discovery_lifecycle() {
+        let transport = InMemoryTransport::new();
+        let alice = WakuA2ANode::new(
+            "alice",
+            "alice agent",
+            vec!["text".into()],
+            transport.clone(),
+        );
+        let bob = WakuA2ANode::new("bob", "bob agent", vec!["code".into()], transport.clone());
+
+        // Step 1: Announce agent cards
+        alice.announce().await.unwrap();
+        bob.announce().await.unwrap();
+
+        // Step 2: Each discovers the other
+        let alice_found = alice.discover().await.unwrap();
+        assert_eq!(alice_found.len(), 1);
+        assert_eq!(alice_found[0].name, "bob");
+
+        let bob_found = bob.discover().await.unwrap();
+        assert_eq!(bob_found.len(), 1);
+        assert_eq!(bob_found[0].name, "alice");
+
+        // Step 3: Announce presence
+        alice.announce_presence().await.unwrap();
+        bob.announce_presence().await.unwrap();
+
+        // Step 4: Poll presence
+        let alice_peers = alice.poll_presence().await.unwrap();
+        assert_eq!(alice_peers, 1);
+        assert_eq!(alice.peers().all_live().len(), 1);
+        assert_eq!(alice.peers().all_live()[0].1.name, "bob");
+
+        let bob_peers = bob.poll_presence().await.unwrap();
+        assert_eq!(bob_peers, 1);
+        assert_eq!(bob.peers().all_live()[0].1.name, "alice");
+
+        // Step 5: Verify capability search
+        let text_peers = bob.find_peers_by_capability("text");
+        assert_eq!(text_peers.len(), 1);
+        assert_eq!(text_peers[0].1.name, "alice");
+    }
+
+    // ── Additional discovery tests (PR #136) ──
+
+    fn fast_config() -> ChannelConfig {
+        ChannelConfig {
+            ack_timeout: Duration::from_millis(1),
+            max_retries: 0,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
     async fn multiple_announces_publish_multiple_messages() {
         let transport = InMemoryTransport::new();
-        let node = make_node("multi", transport.clone());
+        let node = make_node_with_transport("multi", transport.clone());
 
         for _ in 0..3 {
             node.announce().await.unwrap();
@@ -527,13 +972,11 @@ mod discovery_tests {
         assert_eq!(count, 3);
     }
 
-    // ── discover tests ──
-
     #[tokio::test]
     async fn discover_finds_announced_agents() {
         let transport = InMemoryTransport::new();
-        let alice = make_node("alice", transport.clone());
-        let bob = make_node("bob", transport.clone());
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
 
         alice.announce().await.unwrap();
 
@@ -544,98 +987,35 @@ mod discovery_tests {
     }
 
     #[tokio::test]
-    async fn discover_excludes_self() {
-        let transport = InMemoryTransport::new();
-        let node = make_node("self-test", transport.clone());
-
-        node.announce().await.unwrap();
-
-        let cards = node.discover().await.unwrap();
-        assert!(cards.is_empty(), "should not discover own card");
-    }
-
-    #[tokio::test]
     async fn discover_returns_multiple_agents() {
         let transport = InMemoryTransport::new();
 
         // Create and announce 5 agents
         let mut nodes = Vec::new();
         for i in 0..5 {
-            let n = make_node(&format!("agent-{i}"), transport.clone());
+            let n = make_node_with_transport(&format!("agent-{i}"), transport.clone());
             n.announce().await.unwrap();
             nodes.push(n);
         }
 
-        let observer = make_node("observer", transport.clone());
+        let observer = make_node_with_transport("observer", transport.clone());
         let cards = observer.discover().await.unwrap();
         assert_eq!(cards.len(), 5);
     }
 
     #[tokio::test]
-    async fn discover_ignores_non_agent_card_envelopes() {
-        let transport = InMemoryTransport::new();
-
-        // Inject a non-AgentCard envelope on the discovery topic
-        let ack = A2AEnvelope::Ack {
-            message_id: "fake".into(),
-        };
-        let payload = serde_json::to_vec(&ack).unwrap();
-        transport
-            .publish(topics::DISCOVERY, &payload)
-            .await
-            .unwrap();
-
-        // Also inject garbage
-        transport
-            .publish(topics::DISCOVERY, b"not json")
-            .await
-            .unwrap();
-
-        let node = make_node("observer", transport);
-        let cards = node.discover().await.unwrap();
-        assert!(cards.is_empty());
-    }
-
-    #[tokio::test]
-    async fn discover_increments_metrics() {
-        let transport = InMemoryTransport::new();
-
-        let card = AgentCard {
-            name: "remote".into(),
-            description: "remote agent".into(),
-            version: "0.1.0".into(),
-            capabilities: vec![],
-            public_key: "02deadbeef".into(),
-            intro_bundle: None,
-        };
-        let envelope = A2AEnvelope::AgentCard(card);
-        let payload = serde_json::to_vec(&envelope).unwrap();
-        transport
-            .publish(topics::DISCOVERY, &payload)
-            .await
-            .unwrap();
-
-        let node = make_node("observer", transport);
-        let cards = node.discover().await.unwrap();
-        assert_eq!(cards.len(), 1);
-        assert_eq!(node.metrics().discoveries, 1);
-    }
-
-    #[tokio::test]
     async fn discover_empty_when_no_announcements() {
         let transport = InMemoryTransport::new();
-        let node = make_node("lonely", transport);
+        let node = make_node_with_transport("lonely", transport);
         let cards = node.discover().await.unwrap();
         assert!(cards.is_empty());
         assert_eq!(node.metrics().discoveries, 0);
     }
 
-    // ── presence announce + poll tests ──
-
     #[tokio::test]
     async fn announce_presence_publishes_signed_envelope() {
         let transport = InMemoryTransport::new();
-        let node = make_node("alice", transport.clone());
+        let node = make_node_with_transport("alice", transport.clone());
 
         node.announce_presence().await.unwrap();
 
@@ -657,8 +1037,8 @@ mod discovery_tests {
     #[tokio::test]
     async fn announce_presence_custom_ttl() {
         let transport = InMemoryTransport::new();
-        let alice = make_node("alice", transport.clone());
-        let bob = make_node("bob", transport.clone());
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
 
         alice.announce_presence_with_ttl(42).await.unwrap();
 
@@ -667,47 +1047,6 @@ mod discovery_tests {
 
         let peers = bob.peers().all_live();
         assert_eq!(peers[0].1.ttl_secs, 42);
-    }
-
-    #[tokio::test]
-    async fn announce_presence_increments_metrics() {
-        let transport = InMemoryTransport::new();
-        let node = make_node("metriced", transport);
-
-        node.announce_presence().await.unwrap();
-
-        let m = node.metrics();
-        assert_eq!(m.announcements_sent, 1);
-        assert_eq!(m.messages_published, 1);
-    }
-
-    #[tokio::test]
-    async fn poll_presence_ignores_self() {
-        let transport = InMemoryTransport::new();
-        let node = make_node("self", transport.clone());
-
-        node.announce_presence().await.unwrap();
-
-        let count = node.poll_presence().await.unwrap();
-        assert_eq!(count, 0);
-        assert!(node.peers().all_live().is_empty());
-    }
-
-    #[tokio::test]
-    async fn poll_presence_discovers_multiple_peers() {
-        let transport = InMemoryTransport::new();
-        let a = make_node("alice", transport.clone());
-        let b = make_node("bob", transport.clone());
-        let c = make_node("carol", transport.clone());
-        let observer = make_node("observer", transport.clone());
-
-        a.announce_presence().await.unwrap();
-        b.announce_presence().await.unwrap();
-        c.announce_presence().await.unwrap();
-
-        let count = observer.poll_presence().await.unwrap();
-        assert_eq!(count, 3);
-        assert_eq!(observer.peers().all_live().len(), 3);
     }
 
     #[tokio::test]
@@ -721,7 +1060,7 @@ mod discovery_tests {
             transport.clone(),
             fast_config(),
         );
-        let bob = make_node("bob", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
 
         alice.announce_presence().await.unwrap();
         let count = bob.poll_presence().await.unwrap();
@@ -729,18 +1068,6 @@ mod discovery_tests {
 
         let peers = bob.peers().all_live();
         assert_eq!(peers[0].1.capabilities, vec!["text", "code"]);
-    }
-
-    #[tokio::test]
-    async fn poll_presence_increments_peers_discovered_metric() {
-        let transport = InMemoryTransport::new();
-        let alice = make_node("alice", transport.clone());
-        let bob = make_node("bob", transport.clone());
-
-        alice.announce_presence().await.unwrap();
-        bob.poll_presence().await.unwrap();
-
-        assert_eq!(bob.metrics().peers_discovered, 1);
     }
 
     #[tokio::test]
@@ -766,7 +1093,7 @@ mod discovery_tests {
         let payload = serde_json::to_vec(&card_envelope).unwrap();
         transport.publish(topics::PRESENCE, &payload).await.unwrap();
 
-        let node = make_node("observer", transport);
+        let node = make_node_with_transport("observer", transport);
         let count = node.poll_presence().await.unwrap();
         assert_eq!(count, 0);
         assert!(node.peers().all_live().is_empty());
@@ -775,8 +1102,8 @@ mod discovery_tests {
     #[tokio::test]
     async fn poll_presence_lazy_subscribes() {
         let transport = InMemoryTransport::new();
-        let alice = make_node("alice", transport.clone());
-        let bob = make_node("bob", transport.clone());
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
 
         // Alice announces BEFORE bob polls (lazy subscribe)
         alice.announce_presence().await.unwrap();
@@ -789,8 +1116,6 @@ mod discovery_tests {
         let count2 = bob.poll_presence().await.unwrap();
         assert_eq!(count2, 0);
     }
-
-    // ── find_peers_by_capability tests ──
 
     #[tokio::test]
     async fn find_peers_by_capability_filters_correctly() {
@@ -817,7 +1142,7 @@ mod discovery_tests {
             transport.clone(),
             fast_config(),
         );
-        let observer = make_node("observer", transport.clone());
+        let observer = make_node_with_transport("observer", transport.clone());
 
         text_agent.announce_presence().await.unwrap();
         code_agent.announce_presence().await.unwrap();
@@ -838,16 +1163,14 @@ mod discovery_tests {
     #[test]
     fn find_peers_by_capability_empty_peer_map() {
         let transport = InMemoryTransport::new();
-        let node = make_node("lonely", transport);
+        let node = make_node_with_transport("lonely", transport);
         assert!(node.find_peers_by_capability("anything").is_empty());
     }
-
-    // ── peers accessor test ──
 
     #[test]
     fn peers_returns_reference_to_peer_map() {
         let transport = InMemoryTransport::new();
-        let node = make_node("test", transport);
+        let node = make_node_with_transport("test", transport);
         assert!(node.peers().is_empty());
 
         // Manually update peer map
@@ -862,8 +1185,6 @@ mod discovery_tests {
         assert_eq!(node.peers().all_live().len(), 1);
     }
 
-    // ── discover + announce integration ──
-
     #[tokio::test]
     async fn discover_and_announce_roundtrip() {
         let transport = InMemoryTransport::new();
@@ -874,7 +1195,7 @@ mod discovery_tests {
             transport.clone(),
             fast_config(),
         );
-        let bob = make_node("bob", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
 
         alice.announce().await.unwrap();
 
@@ -888,8 +1209,8 @@ mod discovery_tests {
     #[tokio::test]
     async fn announce_discover_does_not_duplicate_same_agent() {
         let transport = InMemoryTransport::new();
-        let alice = make_node("alice", transport.clone());
-        let bob = make_node("bob", transport.clone());
+        let alice = make_node_with_transport("alice", transport.clone());
+        let bob = make_node_with_transport("bob", transport.clone());
 
         // Alice announces twice
         alice.announce().await.unwrap();
