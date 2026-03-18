@@ -449,4 +449,330 @@ mod tests {
         // No sessions should be created
         assert!(receiver.list_sessions().is_empty());
     }
+
+    // ── Additional poll_tasks tests ──
+
+    #[tokio::test]
+    async fn poll_receives_valid_task_envelope() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        // Inject a raw Task envelope directly on the task topic
+        let task = Task::new("02sender", &rpk, "hello from raw envelope");
+        let envelope = A2AEnvelope::Task(task.clone());
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        let topic = topics::task_topic(&rpk);
+        transport.publish(&topic, &payload).await.unwrap();
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text(), Some("hello from raw envelope"));
+        assert_eq!(tasks[0].from, "02sender");
+    }
+
+    #[tokio::test]
+    async fn poll_multiple_tasks_in_single_batch() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let topic = topics::task_topic(&rpk);
+        for i in 0..5 {
+            let task = Task::new("02sender", &rpk, &format!("task-{i}"));
+            let envelope = A2AEnvelope::Task(task);
+            let payload = serde_json::to_vec(&envelope).unwrap();
+            transport.publish(&topic, &payload).await.unwrap();
+        }
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_increments_metrics() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let topic = topics::task_topic(&rpk);
+        let task = Task::new("02sender", &rpk, "metriced");
+        let envelope = A2AEnvelope::Task(task);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(&topic, &payload).await.unwrap();
+
+        let before = receiver.metrics();
+        assert_eq!(before.tasks_received, 0);
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+
+        let after = receiver.metrics();
+        assert_eq!(after.tasks_received, 1);
+        assert!(after.messages_received >= 1);
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_lazy_subscribes_on_first_call() {
+        let transport = MockTransport::new();
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+
+        // Send task BEFORE receiver subscribes
+        let task = Task::new(sender.pubkey(), &rpk, "pre-subscribe");
+        sender.send_task(&task).await.unwrap();
+
+        // First poll should subscribe and pick up the history
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text(), Some("pre-subscribe"));
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_deduplicates_via_bloom_filter() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let topic = topics::task_topic(&rpk);
+        let task = Task::new("02sender", &rpk, "duplicate me");
+        let envelope = A2AEnvelope::Task(task);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+
+        // Publish the exact same bytes twice
+        transport.publish(&topic, &payload).await.unwrap();
+        transport.publish(&topic, &payload).await.unwrap();
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        // Bloom filter dedup should reduce to 1
+        assert_eq!(tasks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn poll_presence_envelope_on_task_topic_ignored() {
+        let transport = MockTransport::new();
+        let node = WakuA2ANode::with_config(
+            "test",
+            "test agent",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let topic = topics::task_topic(node.pubkey());
+        let _ = node.poll_tasks().await.unwrap();
+
+        // Inject a Presence envelope on the task topic
+        let ann = logos_messaging_a2a_core::PresenceAnnouncement {
+            agent_id: "02aa".into(),
+            name: "impostor".into(),
+            capabilities: vec![],
+            waku_topic: "/topic".into(),
+            ttl_secs: 300,
+            signature: None,
+        };
+        let envelope = A2AEnvelope::Presence(ann);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(&topic, &payload).await.unwrap();
+
+        let tasks = node.poll_tasks().await.unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_end_to_end_sender_receiver() {
+        let transport = MockTransport::new();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        // Send 3 tasks
+        for i in 0..3 {
+            let task = Task::new(sender.pubkey(), &rpk, &format!("msg-{i}"));
+            sender.send_task(&task).await.unwrap();
+        }
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 3);
+        for task in &tasks {
+            assert_eq!(task.from, sender.pubkey());
+            assert_eq!(task.to, rpk);
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_encrypted_roundtrip() {
+        let transport = MockTransport::new();
+
+        let sender = WakuA2ANode::new_encrypted("enc-sender", "sender", vec![], transport.clone());
+        let receiver =
+            WakuA2ANode::new_encrypted("enc-receiver", "receiver", vec![], transport.clone());
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let task = Task::new(sender.pubkey(), &rpk, "encrypted message");
+        sender
+            .send_task_to(&task, Some(&receiver.card))
+            .await
+            .unwrap();
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text(), Some("encrypted message"));
+        assert_eq!(tasks[0].from, sender.pubkey());
+
+        // Verify decryption metric
+        assert!(receiver.metrics().decryptions >= 1);
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_with_storage_offload_roundtrip() {
+        use crate::storage::StorageOffloadConfig;
+        use crate::tasks::test_support::MockStorage;
+        use std::sync::Arc;
+
+        let transport = MockTransport::new();
+        let storage = Arc::new(MockStorage::new());
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config())
+                .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 1));
+
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        )
+        .with_storage_offload(StorageOffloadConfig::with_threshold(storage.clone(), 1));
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let big_text = "X".repeat(500);
+        let task = Task::new(sender.pubkey(), &rpk, &big_text);
+        sender.send_task(&task).await.unwrap();
+
+        // Storage should have the offloaded payload
+        assert_eq!(storage.len(), 1);
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text(), Some(big_text.as_str()));
+        // The reconstructed task should not retain the CID
+        assert!(tasks[0].payload_cid.is_none());
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_multiple_sessions_tracked_independently() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+
+        // Create two sessions and send tasks in each
+        let s1 = sender.create_session(&rpk);
+        let s2 = sender.create_session(&rpk);
+
+        sender
+            .send_in_session(&s1.id, "session-1-msg")
+            .await
+            .unwrap();
+        sender
+            .send_in_session(&s2.id, "session-2-msg")
+            .await
+            .unwrap();
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 2);
+
+        // Receiver should have two sessions auto-created
+        let sessions = receiver.list_sessions();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_response_envelope_ignored_as_new_task() {
+        let transport = MockTransport::new();
+        let receiver = WakuA2ANode::with_config(
+            "receiver",
+            "receiver",
+            vec![],
+            transport.clone(),
+            fast_config(),
+        );
+        let rpk = receiver.pubkey().to_string();
+        let _ = receiver.poll_tasks().await.unwrap();
+
+        let sender =
+            WakuA2ANode::with_config("sender", "sender", vec![], transport.clone(), fast_config());
+        let spk = sender.pubkey().to_string();
+        let _ = sender.poll_tasks().await.unwrap();
+
+        // Send a task and respond to it
+        let task = Task::new(&spk, &rpk, "question");
+        sender.send_task(&task).await.unwrap();
+
+        let tasks = receiver.poll_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        receiver.respond(&tasks[0], "answer").await.unwrap();
+
+        // Sender polls — should receive the response as a task with a result
+        let responses = sender.poll_tasks().await.unwrap();
+        assert_eq!(responses.len(), 1);
+        assert!(responses[0].result.is_some());
+    }
 }

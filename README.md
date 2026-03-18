@@ -288,18 +288,35 @@ The `logos-messaging-a2a-cli` crate provides a command-line interface for intera
 cargo run -p logos-messaging-a2a-cli -- --waku http://localhost:8645 <command>
 ```
 
+### Global flags
+
+| Flag | Description |
+|------|-------------|
+| `--waku <url>` | nwaku REST API URL (default: `http://localhost:8645`) |
+| `--keyfile <path>` | Path to a persistent identity keyfile (hex-encoded 32-byte signing key). Generated if missing. |
+| `--encrypt` | Enable X25519+ChaCha20-Poly1305 encryption for this identity |
+| `--json` | Output structured JSON to stdout (informational messages go to stderr) |
+
+### Commands
+
 | Command | Description |
 |---------|-------------|
 | `agent run --name <n> --capabilities <c>` | Run an agent that processes incoming tasks |
 | `agent discover` | Discover agents on the network |
-| `agent bundle` | Print this agent's IntroBundle |
+| `agent bundle` | Print this agent's IntroBundle (for sharing out-of-band) |
 | `task send --to <pubkey> --text <msg>` | Send a task to an agent |
 | `task status --id <uuid>` | Check task status / poll for response |
 | `task stream --id <uuid> [--timeout <s>]` | Follow a task's streaming output |
-| `task delegate --text <msg> [--to <pk>] [--capability <c>] [--broadcast]` | Delegate a subtask to a peer agent |
-| `presence announce --name <n>` | Announce this agent on the presence topic |
-| `presence discover [--capability <c>]` | Listen for presence announcements |
-| `presence peers [--capability <c>]` | Discover and list unique peers |
+| `task delegate --text <msg> [--to <pk>] [--capability <c>] [--broadcast] [--strategy <s>]` | Delegate a subtask to a peer agent |
+| `presence announce --name <n> [--ttl <s>] [--repeat]` | Announce this agent on the presence topic |
+| `presence discover [--capability <c>] [--watch] [--timeout <s>]` | Listen for presence announcements |
+| `presence peers [--capability <c>] [--watch] [--timeout <s>]` | Discover and list unique peers (deduplicated) |
+| `session list` | List all active sessions |
+| `session show --id <uuid>` | Show details of a specific session |
+| `health` | Check Waku node connectivity and health |
+| `metrics` | Display operational metrics counters |
+| `info` | Display agent identity and topic configuration |
+| `completion <shell>` | Generate shell completions (bash, zsh, fish, elvish, powershell) |
 
 ## Encryption
 
