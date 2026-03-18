@@ -2,6 +2,7 @@ mod agent;
 mod cli;
 mod common;
 mod completion;
+mod config;
 mod health;
 mod info;
 mod metrics;
@@ -25,24 +26,42 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let transport = LogosMessagingTransport::new(&cli.waku);
-    let json = cli.json;
-    let identity = IdentityConfig {
-        keyfile: cli.keyfile,
-        encrypt: cli.encrypt,
-    };
+
+    // Load configuration file (--config path, ./lmao.toml, or ~/.config/lmao/config.toml)
+    let cfg = config::load_config(cli.config.as_deref())?;
+
+    // Merge: CLI flags > config file > defaults
+    let (waku_url, keyfile, encrypt, json) =
+        config::merge(cli.waku, cli.keyfile, cli.encrypt, cli.json, &cfg);
+
+    let transport = LogosMessagingTransport::new(&waku_url);
+    let identity = IdentityConfig { keyfile, encrypt };
 
     match cli.command {
         Commands::Agent { action } => agent::handle(action, transport, &identity, json).await,
         Commands::Task { action } => task::handle(action, transport, &identity, json).await,
         Commands::Presence { action } => presence::handle(action, transport, &identity, json).await,
         Commands::Session { action } => session::handle(action, transport, &identity, json).await,
-        Commands::Health => health::handle(&cli.waku, json).await,
+        Commands::Health => health::handle(&waku_url, json).await,
         Commands::Metrics => metrics::handle(transport, &identity, json).await,
         Commands::Completion { shell } => {
             completion::handle(shell);
             Ok(())
         }
         Commands::Info => info::handle(transport, &identity, json),
+        Commands::Config { action } => match action {
+            cli::ConfigAction::Init => config::init_config(json),
+            cli::ConfigAction::Show => {
+                let effective = config::LmaoConfig {
+                    waku_url: Some(waku_url),
+                    keyfile: identity.keyfile.clone(),
+                    encrypt: Some(encrypt),
+                    json: Some(json),
+                    agent: cfg.agent,
+                    presence: cfg.presence,
+                };
+                config::show_config(&effective, json)
+            }
+        },
     }
 }

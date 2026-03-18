@@ -8,9 +8,9 @@ use std::path::PathBuf;
     about = "A2A protocol over Waku decentralized transport"
 )]
 pub struct Cli {
-    /// nwaku REST API URL
-    #[arg(long, default_value = "http://localhost:8645", global = true)]
-    pub waku: String,
+    /// nwaku REST API URL [default: http://localhost:8645]
+    #[arg(long, global = true)]
+    pub waku: Option<String>,
 
     /// Path to a persistent identity keyfile (hex-encoded 32-byte signing key).
     /// If the file does not exist, a new key is generated and saved.
@@ -26,6 +26,10 @@ pub struct Cli {
     /// When set, JSON goes to stdout and informational messages go to stderr.
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Path to a TOML configuration file
+    #[arg(long, global = true)]
+    pub config: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -64,6 +68,19 @@ pub enum Commands {
     },
     /// Display agent identity and topic configuration
     Info,
+    /// Configuration file management
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Create a default configuration file at ~/.config/lmao/config.toml
+    Init,
+    /// Display the effective merged configuration
+    Show,
 }
 
 #[derive(Debug, Subcommand)]
@@ -422,7 +439,7 @@ mod tests {
             "discover",
         ])
         .unwrap();
-        assert_eq!(cli.waku, "http://custom:9090");
+        assert_eq!(cli.waku, Some("http://custom:9090".to_string()));
     }
 
     // ── Existing commands still parse ──
@@ -444,7 +461,7 @@ mod tests {
     #[test]
     fn default_waku_url() {
         let cli = try_parse(&["cli", "agent", "discover"]).unwrap();
-        assert_eq!(cli.waku, "http://localhost:8645");
+        assert!(cli.waku.is_none());
     }
 
     // ── Agent Discover ──
@@ -925,7 +942,7 @@ mod tests {
     #[test]
     fn health_with_custom_waku_url() {
         let cli = try_parse(&["cli", "--waku", "http://node:9090", "health"]).unwrap();
-        assert_eq!(cli.waku, "http://node:9090");
+        assert_eq!(cli.waku, Some("http://node:9090".to_string()));
         match cli.command {
             Commands::Health => {}
             _ => panic!("expected Health"),
@@ -995,5 +1012,64 @@ mod tests {
         assert!(cli.json);
         assert!(cli.encrypt);
         assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/k.key")));
+    }
+
+    // ── --config flag ──
+
+    #[test]
+    fn config_flag_parses() {
+        let cli = try_parse(&["cli", "--config", "/tmp/lmao.toml", "agent", "discover"]).unwrap();
+        assert_eq!(cli.config, Some(PathBuf::from("/tmp/lmao.toml")));
+    }
+
+    #[test]
+    fn config_flag_defaults_to_none() {
+        let cli = try_parse(&["cli", "agent", "discover"]).unwrap();
+        assert!(cli.config.is_none());
+    }
+
+    // ── Config subcommand ──
+
+    #[test]
+    fn config_init_parses() {
+        let cli = try_parse(&["cli", "config", "init"]).unwrap();
+        match cli.command {
+            Commands::Config {
+                action: ConfigAction::Init,
+            } => {}
+            _ => panic!("expected Config Init"),
+        }
+    }
+
+    #[test]
+    fn config_show_parses() {
+        let cli = try_parse(&["cli", "config", "show"]).unwrap();
+        match cli.command {
+            Commands::Config {
+                action: ConfigAction::Show,
+            } => {}
+            _ => panic!("expected Config Show"),
+        }
+    }
+
+    #[test]
+    fn config_show_with_json_flag() {
+        let cli = try_parse(&["cli", "--json", "config", "show"]).unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Config {
+                action: ConfigAction::Show,
+            } => {}
+            _ => panic!("expected Config Show"),
+        }
+    }
+
+    #[test]
+    fn config_missing_action() {
+        let err = try_parse(&["cli", "config"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
     }
 }
