@@ -620,4 +620,228 @@ mod tests {
         let mut rx = transport.subscribe(&expected_topic).await.unwrap();
         assert!(rx.try_recv().is_ok());
     }
+
+    // ── Additional streaming tests (PR #136) ──
+
+    #[tokio::test]
+    async fn respond_stream_marks_only_last_chunk_as_final() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("streamer", transport.clone());
+        let task = Task::new(node.pubkey(), "02recipient", "do something");
+
+        let chunks = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        node.respond_stream(&task, chunks).await.unwrap();
+
+        let stream_topic = topics::stream_topic(&task.id);
+        let mut rx = transport.subscribe(&stream_topic).await.unwrap();
+
+        for i in 0..4 {
+            let msg = rx.try_recv().unwrap();
+            let envelope: A2AEnvelope = serde_json::from_slice(&msg).unwrap();
+            match envelope {
+                A2AEnvelope::StreamChunk(chunk) => {
+                    assert_eq!(chunk.chunk_index, i as u32);
+                    if i == 3 {
+                        assert!(chunk.is_final, "last chunk should be final");
+                    } else {
+                        assert!(!chunk.is_final, "non-last chunk should not be final");
+                    }
+                }
+                _ => panic!("Expected StreamChunk"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_stream_ignores_malformed_messages() {
+        let transport = InMemoryTransport::new();
+        let task_id = "malformed-stream";
+        let stream_topic = topics::stream_topic(task_id);
+
+        // Inject garbage
+        transport.publish(&stream_topic, b"not json").await.unwrap();
+        transport
+            .publish(&stream_topic, b"{\"bad\": true}")
+            .await
+            .unwrap();
+
+        // Inject a non-StreamChunk envelope
+        let ack = A2AEnvelope::Ack {
+            message_id: "fake".into(),
+        };
+        let payload = serde_json::to_vec(&ack).unwrap();
+        transport.publish(&stream_topic, &payload).await.unwrap();
+
+        let node = make_node_with_transport("receiver", transport);
+        let chunks = node.poll_stream_chunks(task_id).await.unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn poll_stream_empty_topic_returns_empty() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("receiver", transport);
+        let chunks = node.poll_stream_chunks("no-such-task").await.unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn respond_stream_and_poll_roundtrip() {
+        let transport = InMemoryTransport::new();
+        let sender = make_node_with_transport("sender", transport.clone());
+        let receiver = make_node_with_transport("receiver", transport);
+
+        let task = Task::new(sender.pubkey(), receiver.pubkey(), "stream me");
+        let chunks = vec![
+            "Hello ".to_string(),
+            "streaming ".to_string(),
+            "world!".to_string(),
+        ];
+        sender.respond_stream(&task, chunks).await.unwrap();
+
+        let received = receiver.poll_stream_chunks(&task.id).await.unwrap();
+        assert_eq!(received.len(), 3);
+        assert_eq!(received[0].text, "Hello ");
+        assert_eq!(received[1].text, "streaming ");
+        assert_eq!(received[2].text, "world!");
+        assert!(received[2].is_final);
+
+        // Reassemble
+        let full = receiver.reassemble_stream(&task.id);
+        assert_eq!(full, Some("Hello streaming world!".to_string()));
+    }
+
+    #[tokio::test]
+    async fn reassemble_with_empty_chunk_texts() {
+        let transport = InMemoryTransport::new();
+        let task_id = "empty-chunks";
+        let stream_topic = topics::stream_topic(task_id);
+
+        for (idx, text, is_final) in [(0, "", false), (1, "", false), (2, "end", true)] {
+            let chunk = TaskStreamChunk {
+                task_id: task_id.to_string(),
+                chunk_index: idx,
+                text: text.to_string(),
+                is_final,
+            };
+            let envelope = A2AEnvelope::StreamChunk(chunk);
+            let payload = serde_json::to_vec(&envelope).unwrap();
+            transport.publish(&stream_topic, &payload).await.unwrap();
+        }
+
+        let node = make_node_with_transport("receiver", transport);
+        node.poll_stream_chunks(task_id).await.unwrap();
+        let result = node.reassemble_stream(task_id);
+        assert_eq!(result, Some("end".to_string()));
+    }
+
+    #[tokio::test]
+    async fn multiple_tasks_stream_independently() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("streamer", transport.clone());
+
+        let task_a = Task::new(node.pubkey(), "02a", "task a");
+        let task_b = Task::new(node.pubkey(), "02b", "task b");
+
+        node.respond_stream(&task_a, vec!["A1".into(), "A2".into()])
+            .await
+            .unwrap();
+        node.respond_stream(&task_b, vec!["B1".into(), "B2".into(), "B3".into()])
+            .await
+            .unwrap();
+
+        let receiver = make_node_with_transport("receiver", transport);
+
+        let chunks_a = receiver.poll_stream_chunks(&task_a.id).await.unwrap();
+        let chunks_b = receiver.poll_stream_chunks(&task_b.id).await.unwrap();
+
+        assert_eq!(chunks_a.len(), 2);
+        assert_eq!(chunks_a[0].text, "A1");
+        assert_eq!(chunks_a[1].text, "A2");
+        assert!(chunks_a[1].is_final);
+
+        assert_eq!(chunks_b.len(), 3);
+        assert_eq!(chunks_b[0].text, "B1");
+        assert_eq!(chunks_b[2].text, "B3");
+        assert!(chunks_b[2].is_final);
+
+        // Reassemble both independently
+        assert_eq!(
+            receiver.reassemble_stream(&task_a.id),
+            Some("A1A2".to_string())
+        );
+        assert_eq!(
+            receiver.reassemble_stream(&task_b.id),
+            Some("B1B2B3".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_stream_accumulates_across_calls() {
+        let transport = InMemoryTransport::new();
+        let task_id = "incremental";
+        let stream_topic = topics::stream_topic(task_id);
+
+        // First batch: chunk 0
+        let chunk = TaskStreamChunk {
+            task_id: task_id.to_string(),
+            chunk_index: 0,
+            text: "first".to_string(),
+            is_final: false,
+        };
+        let envelope = A2AEnvelope::StreamChunk(chunk);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(&stream_topic, &payload).await.unwrap();
+
+        let node = make_node_with_transport("receiver", transport.clone());
+        let chunks = node.poll_stream_chunks(task_id).await.unwrap();
+        assert_eq!(chunks.len(), 1);
+
+        // Second batch: chunk 1 (final)
+        let chunk = TaskStreamChunk {
+            task_id: task_id.to_string(),
+            chunk_index: 1,
+            text: "second".to_string(),
+            is_final: true,
+        };
+        let envelope = A2AEnvelope::StreamChunk(chunk);
+        let payload = serde_json::to_vec(&envelope).unwrap();
+        transport.publish(&stream_topic, &payload).await.unwrap();
+
+        let chunks = node.poll_stream_chunks(task_id).await.unwrap();
+        // Should have both chunks accumulated
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].text, "first");
+        assert_eq!(chunks[1].text, "second");
+        assert!(chunks[1].is_final);
+
+        // Reassemble should work now
+        assert_eq!(
+            node.reassemble_stream(task_id),
+            Some("firstsecond".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_stream_large_chunk_count() {
+        let transport = InMemoryTransport::new();
+        let node = make_node_with_transport("streamer", transport.clone());
+        let task = Task::new(node.pubkey(), "02recipient", "many chunks");
+
+        let chunks: Vec<String> = (0..100).map(|i| format!("{i}")).collect();
+        node.respond_stream(&task, chunks).await.unwrap();
+
+        let receiver = make_node_with_transport("receiver", transport);
+        let received = receiver.poll_stream_chunks(&task.id).await.unwrap();
+        assert_eq!(received.len(), 100);
+        assert_eq!(received[0].chunk_index, 0);
+        assert_eq!(received[99].chunk_index, 99);
+        assert!(received[99].is_final);
+        assert!(!received[98].is_final);
+    }
 }
