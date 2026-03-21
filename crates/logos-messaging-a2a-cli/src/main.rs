@@ -7,6 +7,7 @@ mod info;
 mod metrics;
 mod presence;
 mod session;
+mod skill;
 mod task;
 
 use anyhow::Result;
@@ -44,5 +45,6 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Info => info::handle(transport, &identity, json),
+        Commands::Skill { action } => skill::handle(action, json),
     }
 }
