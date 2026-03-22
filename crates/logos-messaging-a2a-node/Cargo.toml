@@ -1,0 +1,24 @@
+[package]
+name = "logos-messaging-a2a-node"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+logos-messaging-a2a-crypto = { path = "../logos-messaging-a2a-crypto" }
+logos-messaging-a2a-core = { path = "../logos-messaging-a2a-core" }
+logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
+logos-messaging-a2a-storage = { path = "../logos-messaging-a2a-storage", default-features = false }
+logos-messaging-a2a-execution = { path = "../logos-messaging-a2a-execution", default-features = false }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+k256 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+fastrand = "2"
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

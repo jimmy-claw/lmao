@@ -1,0 +1,27 @@
+[package]
+name = "logos-messaging-a2a-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "logos-messaging-a2a"
+path = "src/main.rs"
+
+[dependencies]
+logos-messaging-a2a-crypto = { path = "../logos-messaging-a2a-crypto" }
+logos-messaging-a2a-core = { path = "../logos-messaging-a2a-core" }
+logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
+logos-messaging-a2a-node = { path = "../logos-messaging-a2a-node" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+clap_complete = "4"
+k256 = { workspace = true }
+hex = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

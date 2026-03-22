@@ -1,0 +1,24 @@
+name: lmao
+version: 0.1.0
+type: core
+category: network
+description: "LMAO — A2A agent discovery and task communication over Waku"
+
+dependencies: []
+
+nix_packages:
+  build: []
+  runtime: []
+
+external_libraries:
+  - name: liblmao_ffi
+    vendor_path: "lib"
+
+include:
+  - liblmao_ffi.so
+  - liblmao_ffi.dylib
+
+cmake:
+  extra_sources:
+    - src/AgentListModel.cpp
+    - src/LmaoBackend.cpp

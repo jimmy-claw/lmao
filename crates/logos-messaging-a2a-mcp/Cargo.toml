@@ -1,0 +1,24 @@
+[package]
+name = "logos-messaging-a2a-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "MCP server bridge — expose Logos Messaging A2A agents as MCP tools"
+
+[[bin]]
+name = "logos-messaging-a2a-mcp"
+path = "src/main.rs"
+
+[dependencies]
+logos-messaging-a2a-core = { path = "../logos-messaging-a2a-core" }
+logos-messaging-a2a-node = { path = "../logos-messaging-a2a-node" }
+logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
+rmcp = { version = "0.17", features = ["server", "transport-io"] }
+rmcp-macros = "0.17"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+schemars = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

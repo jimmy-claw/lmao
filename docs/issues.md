@@ -60,10 +60,10 @@ The current "minimal-SDS" provides:
 
 **Labels:** `enhancement`, `security`, `privacy`
 
-**Status:** DONE — X25519+ChaCha20-Poly1305 stepping stone implemented in `waku-a2a-crypto` crate. Full migration to Logos Chat SDK (Double Ratchet) tracked as future work when Rust bindings are available.
+**Status:** DONE — X25519+ChaCha20-Poly1305 stepping stone implemented in `logos-messaging-a2a-crypto` crate. Full migration to Logos Chat SDK (Double Ratchet) tracked as future work when Rust bindings are available.
 
 **What was implemented:**
-- `waku-a2a-crypto` crate: `AgentIdentity` (X25519 keypair), `SessionKey` (ECDH shared secret), `EncryptedPayload` (ChaCha20-Poly1305)
+- `logos-messaging-a2a-crypto` crate: `AgentIdentity` (X25519 keypair), `SessionKey` (ECDH shared secret), `EncryptedPayload` (ChaCha20-Poly1305)
 - `IntroBundle` for out-of-band key exchange
 - `A2AEnvelope::EncryptedTask` variant for encrypted task payloads
 - `AgentCard.intro_bundle` field for advertising encryption support

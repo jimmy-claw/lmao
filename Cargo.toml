@@ -1,21 +1,30 @@
 [package]
-name = "waku-a2a"
+name = "logos-messaging-a2a"
 version = "0.1.0"
 edition = "2021"
 description = "A2A protocol over Waku decentralized transport"
 
+[lib]
+doc = false
+
 [workspace]
 resolver = "2"
 members = [
-    "crates/waku-a2a-crypto",
-    "crates/waku-a2a-core",
-    "crates/waku-a2a-transport",
-    "crates/waku-a2a-node",
-    "crates/waku-a2a-cli",
-    "crates/waku-a2a-mcp",
+    "crates/logos-messaging-a2a-crypto",
+    "crates/logos-messaging-a2a-core",
+    "crates/logos-messaging-a2a-transport",
+    "crates/logos-messaging-a2a-storage",
+    "crates/logos-messaging-a2a-node",
+    "crates/logos-messaging-a2a-cli",
+    "crates/logos-messaging-a2a-mcp",
     "crates/lmao-ffi",
-    "crates/waku-a2a-ffi",
+    "crates/logos-messaging-a2a-ffi",
+    "crates/logos-messaging-a2a-execution",
 ]
+# The demo enables the `logos-core` feature which requires liblogos_core.so at
+# link time. Excluding it from the workspace prevents feature unification from
+# breaking `cargo test --workspace`. Run it via `make demo-logos-core`.
+exclude = ["demos/logos-core-e2e"]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -27,13 +36,20 @@ clap = { version = "4", features = ["derive"] }
 k256 = "0.13"
 hex = "0.4"
 anyhow = "1"
+thiserror = "2"
 async-trait = "0.1"
+sha2 = "0.10"
+bloomfilter = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dependencies]
-waku-a2a-crypto = { path = "crates/waku-a2a-crypto" }
-waku-a2a-core = { path = "crates/waku-a2a-core" }
-waku-a2a-transport = { path = "crates/waku-a2a-transport" }
-waku-a2a-node = { path = "crates/waku-a2a-node" }
+logos-messaging-a2a-crypto = { path = "crates/logos-messaging-a2a-crypto" }
+logos-messaging-a2a-core = { path = "crates/logos-messaging-a2a-core" }
+logos-messaging-a2a-transport = { path = "crates/logos-messaging-a2a-transport" }
+logos-messaging-a2a-storage = { path = "crates/logos-messaging-a2a-storage" }
+logos-messaging-a2a-node = { path = "crates/logos-messaging-a2a-node" }
+logos-messaging-a2a-execution = { path = "crates/logos-messaging-a2a-execution", default-features = false }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -46,3 +62,17 @@ path = "examples/echo_agent.rs"
 [[example]]
 name = "ping_pong"
 path = "examples/ping_pong.rs"
+
+# No change needed here — sha2 goes in transport crate
+
+[[example]]
+name = "two_agents"
+path = "examples/two_agents.rs"
+
+[[example]]
+name = "presence_discovery"
+path = "examples/presence_discovery.rs"
+
+[[example]]
+name = "task_delegation"
+path = "examples/task_delegation.rs"

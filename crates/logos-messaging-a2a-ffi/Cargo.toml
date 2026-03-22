@@ -1,0 +1,21 @@
+[package]
+name = "logos-messaging-a2a-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C FFI bridge for logos-messaging-a2a — enables Logos Core Qt module integration"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+name = "logos_messaging_a2a_ffi"
+
+[dependencies]
+logos-messaging-a2a-core = { path = "../logos-messaging-a2a-core" }
+logos-messaging-a2a-transport = { path = "../logos-messaging-a2a-transport" }
+logos-messaging-a2a-node = { path = "../logos-messaging-a2a-node" }
+logos-messaging-a2a-crypto = { path = "../logos-messaging-a2a-crypto" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+once_cell = "1"
+
+[dev-dependencies]
+serial_test = "3"

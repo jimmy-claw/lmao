@@ -1,6 +1,6 @@
 # Logos Core IComponent Module
 
-Qt plugin that wraps the `waku-a2a-ffi` Rust library as a Logos Core IComponent module,
+Qt plugin that wraps the `logos-messaging-a2a-ffi` Rust library as a Logos Core IComponent module,
 loadable by `logos-app-poc`.
 
 ## Architecture
@@ -15,7 +15,7 @@ loadable by `logos-app-poc`.
 │  MessagingA2ABackend (C++)      │
 │  MessagingA2AView.qml           │
 ├─────────────────────────────────┤
-│  libwaku_a2a_ffi.so             │  ← Rust FFI crate
+│  liblogos_messaging_a2a_ffi.so             │  ← Rust FFI crate
 │  (C API: init/announce/send/…)  │
 ├─────────────────────────────────┤
 │  Rust core crates               │
@@ -28,14 +28,14 @@ loadable by `logos-app-poc`.
 ### Prerequisites
 - Qt6 (Core, Widgets, Quick, Qml, QuickWidgets)
 - logos-cpp-sdk installed
-- `libwaku_a2a_ffi.so` built (`cargo build --release -p waku-a2a-ffi` from repo root)
+- `liblogos_messaging_a2a_ffi.so` built (`cargo build --release -p logos-messaging-a2a-ffi` from repo root)
 
 ### Steps
 
 ```bash
 # Build the Rust FFI library first
 cd /path/to/logos-messaging-a2a
-cargo build --release -p waku-a2a-ffi
+cargo build --release -p logos-messaging-a2a-ffi
 
 # Build the Qt module
 cd module
@@ -48,7 +48,7 @@ make -j$(nproc)
 ```
 
 ### Install
-Copy `libmessaging_a2a_ui.so` + `libwaku_a2a_ffi.so` to the logos-app-poc plugin directory.
+Copy `libmessaging_a2a_ui.so` + `liblogos_messaging_a2a_ffi.so` to the logos-app-poc plugin directory.
 
 ## QML UI
 

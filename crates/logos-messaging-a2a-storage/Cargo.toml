@@ -1,0 +1,29 @@
+[package]
+name = "logos-messaging-a2a-storage"
+version = "0.1.0"
+edition = "2021"
+description = "Storage backend trait and Logos Storage (Codex) REST implementation"
+
+[features]
+default = ["rest"]
+rest = ["reqwest"]
+logos-core = ["base64"]
+libstorage = ["dep:storage-bindings", "dep:tempfile"]
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# REST backend
+reqwest = { workspace = true, optional = true }
+
+# Logos Core native backend
+base64 = { version = "0.22", optional = true }
+
+# Libstorage native backend
+storage-bindings = { version = "0.2", optional = true }
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"

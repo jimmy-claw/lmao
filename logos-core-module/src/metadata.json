@@ -1,0 +1,8 @@
+{
+    "name": "lmao",
+    "version": "0.1.0",
+    "description": "LMAO — A2A agent discovery and task communication over Waku",
+    "author": "jimmy-claw",
+    "type": "network",
+    "url": "https://github.com/jimmy-claw/lmao"
+}
