@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LMAO IComponent - Logos A2A Messaging</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #1a1a2e;
+    color: #ccc;
+    width: 420px;
+    min-height: 640px;
+    padding: 16px;
+  }
+  .root {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: 100%;
+  }
+  .header {
+    text-align: center;
+    font-size: 24px;
+    font-weight: bold;
+    color: #e94560;
+  }
+  .status-bar {
+    background: #0f3460;
+    border-radius: 8px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+  }
+  .status-connected {
+    color: #4ecca3;
+    font-size: 14px;
+  }
+  .status-key {
+    color: #888;
+    font-size: 12px;
+  }
+  .group-box {
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    background: #16213e;
+    padding: 12px;
+  }
+  .group-title {
+    color: #ccc;
+    font-size: 14px;
+    margin-bottom: 10px;
+    font-weight: 500;
+  }
+  .input-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  input[type="text"] {
+    background: #1a1a2e;
+    border: 1px solid #0f3460;
+    border-radius: 4px;
+    color: #eee;
+    padding: 8px 10px;
+    font-size: 13px;
+    outline: none;
+    width: 100%;
+  }
+  input[type="text"]::placeholder { color: #555; }
+  .btn-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  button {
+    background: #0f3460;
+    color: #ccc;
+    border: 1px solid #1a4a8a;
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover { background: #1a4a8a; }
+  button.disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .agent-list {
+    min-height: 120px;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .agent-item {
+    padding: 8px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #ccc;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .agent-item:nth-child(odd) { background: #1a1a2e; }
+  .agent-item:nth-child(even) { background: #16213e; }
+  .agent-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot-online { background: #4ecca3; }
+  .dot-idle { background: #e9c846; }
+  .dot-offline { background: #e94560; }
+  .agent-name { font-weight: 500; color: #ddd; }
+  .agent-key { color: #666; font-size: 11px; margin-left: auto; }
+  .send-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .send-row input { flex: 1; }
+</style>
+</head>
+<body>
+<div class="root">
+  <!-- Header -->
+  <div class="header">&#x1F99E; Logos A2A Messaging</div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <span class="status-connected">&#x25CF; Connected</span>
+    <span class="status-key">Key: 0x7a3f9b2c4e1d8f06...</span>
+  </div>
+
+  <!-- Initialize -->
+  <div class="group-box">
+    <div class="group-title">Initialize</div>
+    <div class="input-row">
+      <input type="text" value="my-logos-agent" />
+      <input type="text" value="http://127.0.0.1:8645" />
+      <div class="btn-row">
+        <button class="disabled">Initialize</button>
+        <button>Announce</button>
+        <button>Discover</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Discovered Agents -->
+  <div class="group-box" style="flex: 1;">
+    <div class="group-title">Discovered Agents (4)</div>
+    <div class="agent-list">
+      <div class="agent-item">
+        <span class="agent-dot dot-online"></span>
+        <span class="agent-name">alice-agent</span>
+        <span class="agent-key">0x8b2f...c4a1</span>
+      </div>
+      <div class="agent-item">
+        <span class="agent-dot dot-online"></span>
+        <span class="agent-name">bob-relay</span>
+        <span class="agent-key">0x3e7d...9f02</span>
+      </div>
+      <div class="agent-item">
+        <span class="agent-dot dot-idle"></span>
+        <span class="agent-name">waku-bridge-01</span>
+        <span class="agent-key">0xa1c5...7b3e</span>
+      </div>
+      <div class="agent-item">
+        <span class="agent-dot dot-offline"></span>
+        <span class="agent-name">test-node-gamma</span>
+        <span class="agent-key">0x5f9a...2d08</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Send Message -->
+  <div class="group-box">
+    <div class="group-title">Send Message</div>
+    <div class="send-row">
+      <input type="text" placeholder="Target pubkey" />
+      <input type="text" placeholder="Message" />
+      <button>Send</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>
