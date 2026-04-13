@@ -9,6 +9,7 @@ default = ["rest"]
 rest = ["reqwest"]
 logos-core = ["base64"]
 libstorage = ["dep:storage-bindings", "dep:tempfile"]
+storage-module = ["reqwest"]
 
 [dependencies]
 tokio = { workspace = true }
