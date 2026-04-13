@@ -44,6 +44,11 @@ pub mod logos_core_transport;
 #[cfg(feature = "logos-core")]
 pub use logos_core_transport::LogosCoreDeliveryTransport;
 
+#[cfg(feature = "logos-delivery")]
+pub mod logos_delivery_qtro;
+#[cfg(feature = "logos-delivery")]
+pub use logos_delivery_qtro::QtRODeliveryTransport;
+
 #[cfg(feature = "native-waku")]
 mod waku_bindings_transport;
 #[cfg(feature = "native-waku")]
