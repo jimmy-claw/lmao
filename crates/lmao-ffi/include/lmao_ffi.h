@@ -45,24 +45,22 @@ void lmao_free_string(char *s);
  */
 char *lmao_version(void);
 
-/* ── QtRO Delivery Transport Bridge ─────────────────────────────────────── */
-
-typedef int (*LmaoPublishFn)(const char *topic, const char *payload_b64, void *user_data);
-typedef int (*LmaoSubscribeFn)(const char *topic, void *user_data);
-typedef int (*LmaoUnsubscribeFn)(const char *topic, void *user_data);
-
 /**
- * Register QtRO delivery callbacks. Called once during module init.
- * Returns 1 on success, 0 if already registered.
+ * Register QtRO delivery callbacks from the C++ module host.
+ *
+ * Must be called once during module initialization, before any transport
+ * operations. The C++ side obtains a delivery_module QtRO replica via
+ * `logosAPI->getClient("delivery_module")` and provides function pointers
+ * that forward publish/subscribe/unsubscribe calls to the replica.
+ *
+ * Returns 1 on success, 0 if callbacks were already registered.
+ *
+ * # Safety
+ * All function pointers and `user_data` must remain valid for the process lifetime.
  */
-int lmao_qtro_set_callbacks(LmaoPublishFn publish_fn,
-                            LmaoSubscribeFn subscribe_fn,
-                            LmaoUnsubscribeFn unsubscribe_fn,
+int lmao_qtro_set_callbacks(lmaoPublishFn publish_fn,
+                            lmaoSubscribeFn subscribe_fn,
+                            lmaoUnsubscribeFn unsubscribe_fn,
                             void *user_data);
-
-/**
- * Called from C++ when delivery_module emits a message on a subscribed topic.
- */
-void lmao_qtro_on_message(const char *topic, const char *payload_b64);
 
 #endif  /* LMAO_FFI_H */
