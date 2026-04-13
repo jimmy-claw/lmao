@@ -8,6 +8,13 @@
 //! to encrypt and decrypt [`EncryptedPayload`] messages with ChaCha20-Poly1305
 //! AEAD. The [`IntroBundle`] type carries the public key material exchanged
 //! out-of-band to bootstrap a session.
+//!
+//! The [`chat_sdk`] module provides a [`chat_sdk::SessionProvider`] trait that
+//! abstracts session management. This is the integration point for Logos Chat
+//! SDK's Double Ratchet once Rust FFI bindings are available. Until then, the
+//! [`chat_sdk::EphemeralProvider`] wraps the X25519 primitives below.
+
+pub mod chat_sdk;
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng},

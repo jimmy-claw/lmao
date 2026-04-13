@@ -7,6 +7,10 @@ description = "C FFI wrapper for LMAO (A2A over Waku)"
 [lib]
 crate-type = ["cdylib", "staticlib"]
 
+[features]
+default = []
+logos-delivery = ["logos-messaging-a2a-transport/logos-delivery"]
+
 [dependencies]
 logos-messaging-a2a-node = { path = "../logos-messaging-a2a-node" }
 logos-messaging-a2a-core = { path = "../logos-messaging-a2a-core" }

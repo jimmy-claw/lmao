@@ -45,4 +45,22 @@ void lmao_free_string(char *s);
  */
 char *lmao_version(void);
 
+/**
+ * Register QtRO delivery callbacks from the C++ module host.
+ *
+ * Must be called once during module initialization, before any transport
+ * operations. The C++ side obtains a delivery_module QtRO replica via
+ * `logosAPI->getClient("delivery_module")` and provides function pointers
+ * that forward publish/subscribe/unsubscribe calls to the replica.
+ *
+ * Returns 1 on success, 0 if callbacks were already registered.
+ *
+ * # Safety
+ * All function pointers and `user_data` must remain valid for the process lifetime.
+ */
+int lmao_qtro_set_callbacks(lmaoPublishFn publish_fn,
+                            lmaoSubscribeFn subscribe_fn,
+                            lmaoUnsubscribeFn unsubscribe_fn,
+                            void *user_data);
+
 #endif  /* LMAO_FFI_H */
