@@ -214,6 +214,45 @@ pub extern "C" fn lmao_version() -> *mut c_char {
     to_cstring(env!("CARGO_PKG_VERSION").to_string())
 }
 
+// ── QtRO Delivery Transport Bridge ────────────────────────────────────────
+//
+// These functions allow the C++ module host to inject QtRO-based delivery
+// transport callbacks at runtime, replacing the need for liblogos_core linkage.
+// The C++ side calls logosAPI->getClient("delivery_module") to get a QtRO
+// replica and wires the callbacks through lmao_qtro_set_callbacks().
+
+/// Register QtRO delivery callbacks from the C++ module host.
+///
+/// Must be called once during module initialization, before any transport
+/// operations. The C++ side obtains a delivery_module QtRO replica via
+/// `logosAPI->getClient("delivery_module")` and provides function pointers
+/// that forward publish/subscribe/unsubscribe calls to the replica.
+///
+/// Returns 1 on success, 0 if callbacks were already registered.
+///
+/// # Safety
+/// All function pointers and `user_data` must remain valid for the process lifetime.
+#[cfg(feature = "logos-delivery")]
+#[no_mangle]
+pub unsafe extern "C" fn lmao_qtro_set_callbacks(
+    publish_fn: logos_messaging_a2a_transport::logos_delivery_qtro::PublishFn,
+    subscribe_fn: logos_messaging_a2a_transport::logos_delivery_qtro::SubscribeFn,
+    unsubscribe_fn: logos_messaging_a2a_transport::logos_delivery_qtro::UnsubscribeFn,
+    user_data: *mut std::ffi::c_void,
+) -> std::os::raw::c_int {
+    let cbs = logos_messaging_a2a_transport::logos_delivery_qtro::QtROCallbacks {
+        publish: publish_fn,
+        subscribe: subscribe_fn,
+        unsubscribe: unsubscribe_fn,
+        user_data,
+    };
+    if logos_messaging_a2a_transport::logos_delivery_qtro::set_qtro_callbacks(cbs) {
+        1
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
