@@ -64,6 +64,11 @@ pub enum Commands {
     },
     /// Display agent identity and topic configuration
     Info,
+    /// Skill marketplace (publish, list, inspect)
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -996,4 +1001,47 @@ mod tests {
         assert!(cli.encrypt);
         assert_eq!(cli.keyfile, Some(PathBuf::from("/tmp/k.key")));
     }
+}
+
+// ── Skill marketplace ────────────────────────────────────────────────────────
+
+#[derive(Debug, Subcommand)]
+pub enum SkillAction {
+    /// Publish a skill file to the local skill registry.
+    ///
+    /// Creates a skill bundle JSON at `~/.config/lmao/skills/<id>.json`.
+    Publish {
+        /// Path to a SKILL.md file or a directory containing one.
+        #[arg(long)]
+        path: std::path::PathBuf,
+
+        /// Override the skill name (default: first heading in the file).
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Author name or handle (default: git user.name or $USER).
+        #[arg(long)]
+        author: Option<String>,
+
+        /// Semantic version (default: "1.0.0").
+        #[arg(long, default_value = "1.0.0")]
+        version: String,
+
+        /// Comma-separated tags, e.g. `rust,cli,ai` (default: parsed from file).
+        #[arg(long)]
+        tags: Option<String>,
+    },
+
+    /// List locally published skills.
+    List {
+        /// Filter by tag.
+        #[arg(long)]
+        tag: Option<String>,
+    },
+
+    /// Show full details of a skill bundle.
+    Info {
+        /// Skill ID or unambiguous prefix.
+        id: String,
+    },
 }
