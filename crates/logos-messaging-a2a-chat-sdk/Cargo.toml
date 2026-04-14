@@ -1,0 +1,13 @@
+[package]
+name = "logos-messaging-a2a-chat-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Rust bindings for Logos Chat SDK — agent-to-agent encrypted sessions, intro bundle discovery, and group session support"
+
+[dependencies]
+logos-messaging-a2a-crypto = { path = "../logos-messaging-a2a-crypto" }
+logos-messaging-a2a-core = { path = "../logos-messaging-a2a-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
