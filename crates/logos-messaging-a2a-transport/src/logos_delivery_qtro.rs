@@ -1,73 +1,47 @@
-//! QtRO-based delivery transport — inter-module calls via Logos Core's QtRemoteObjects layer.
+//! QtRO-based delivery transport — inter-module calls via `logos_core_call_plugin_method_async`.
 //!
-//! Instead of linking `liblogos_core.so` at compile time (like the `logos-core` feature),
-//! this transport receives function pointers at runtime from the C++ module host.
-//! The C++ side calls `logosAPI->getClient("delivery_module")` to obtain a QtRO replica,
-//! then injects publish/subscribe/unsubscribe callbacks via [`set_qtro_callbacks`].
+//! Calls the real `logos-delivery-module` (logos-co/logos-delivery-module) through the
+//! Logos Core C IPC layer. Unlike `LogosCoreDeliveryTransport`, this transport does NOT
+//! manage the delivery node lifecycle (`createNode`/`start`) — the external
+//! `delivery_module` plugin manages its own lifecycle.
 //!
-//! This is the same pattern used by `logos-kv-module` and `lez-multisig-module`.
+//! Replaces the previous callback-based approach (PublishFn/SubscribeFn/UnsubscribeFn)
+//! with direct `logos_core_call_plugin_method_async` calls and
+//! `logos_core_register_event_listener` for inbound messages.
 
 use crate::{Result, Transport, TransportError};
 use async_trait::async_trait;
+use base64::Engine;
 use std::collections::HashMap;
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, CStr};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
-// Callback function pointer types (set by C++ host at runtime)
-// ---------------------------------------------------------------------------
+// Re-use the logos_core FFI bindings (call_plugin_method, register_event_listener).
+use crate::logos_core;
 
-/// `int publish(const char* topic, const char* payload_b64, void* user_data)`
-/// Returns 0 on success, non-zero on error.
-pub type PublishFn = extern "C" fn(topic: *const c_char, payload_b64: *const c_char, user_data: *mut c_void) -> c_int;
+const PLUGIN: &str = "delivery_module";
 
-/// `int subscribe(const char* topic, void* user_data)`
-/// Returns 0 on success, non-zero on error.
-pub type SubscribeFn = extern "C" fn(topic: *const c_char, user_data: *mut c_void) -> c_int;
-
-/// `int unsubscribe(const char* topic, void* user_data)`
-/// Returns 0 on success, non-zero on error.
-pub type UnsubscribeFn = extern "C" fn(topic: *const c_char, user_data: *mut c_void) -> c_int;
-
-/// Callback table injected by the C++ module host.
-#[repr(C)]
-pub struct QtROCallbacks {
-    pub publish: PublishFn,
-    pub subscribe: SubscribeFn,
-    pub unsubscribe: UnsubscribeFn,
-    /// Opaque pointer passed back to every callback (e.g. pointer to QtRO replica wrapper).
-    pub user_data: *mut c_void,
-}
-
-// SAFETY: The C++ side guarantees that user_data points to a thread-safe object
-// (QRemoteObjectDynamicReplica calls are serialised by Qt's event loop).
-unsafe impl Send for QtROCallbacks {}
-unsafe impl Sync for QtROCallbacks {}
-
-/// Global callback table — set once by `set_qtro_callbacks`, read by every transport instance.
-static CALLBACKS: OnceLock<QtROCallbacks> = OnceLock::new();
-
-/// Register the QtRO callback table. Called once from C++ during module initialisation.
-///
-/// # Safety
-/// `cbs` must point to a valid `QtROCallbacks` whose function pointers and `user_data`
-/// remain valid for the lifetime of the process.
-pub unsafe fn set_qtro_callbacks(cbs: QtROCallbacks) -> bool {
-    CALLBACKS.set(cbs).is_ok()
-}
-
-fn callbacks() -> Result<&'static QtROCallbacks> {
-    CALLBACKS
-        .get()
-        .ok_or_else(|| TransportError::Transport("QtRO callbacks not initialised — call set_qtro_callbacks first".into()))
+/// Build a Logos Core params JSON array from name/value pairs (all string-typed).
+fn params_json(pairs: &[(&str, &str)]) -> String {
+    let entries: Vec<String> = pairs
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                r#"{{"name":"{}","value":"{}","type":"string"}}"#,
+                name, value
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
 }
 
 // ---------------------------------------------------------------------------
-// Inbound message dispatch (C++ → Rust)
+// Inbound message dispatch (C++ → Rust) — kept for backward compatibility
+// with C++ hosts that call lmao_qtro_on_message directly.
 // ---------------------------------------------------------------------------
 
-/// Per-topic sender map for dispatching inbound messages from the C++ event handler.
+/// Per-topic sender map for dispatching inbound messages.
 static TOPIC_SENDERS: OnceLock<Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Vec<u8>>>>>> =
     OnceLock::new();
 
@@ -76,6 +50,8 @@ fn topic_senders() -> &'static Arc<Mutex<HashMap<String, mpsc::UnboundedSender<V
 }
 
 /// Called from C++ when the delivery_module emits a message on a subscribed topic.
+///
+/// Retained for backward compatibility with existing C++ module hosts.
 ///
 /// # Safety
 /// `topic` and `payload_b64` must be valid, null-terminated UTF-8 C strings.
@@ -90,9 +66,9 @@ pub unsafe extern "C" fn lmao_qtro_on_message(topic: *const c_char, payload_b64:
         Err(_) => return,
     };
 
-    let payload = match base64_decode(payload_str) {
-        Some(p) => p,
-        None => return,
+    let payload = match base64::engine::general_purpose::STANDARD.decode(payload_str) {
+        Ok(p) => p,
+        Err(_) => return,
     };
 
     let guard = topic_senders().lock().unwrap();
@@ -107,59 +83,114 @@ pub unsafe extern "C" fn lmao_qtro_on_message(topic: *const c_char, payload_b64:
 
 /// Logos Delivery transport via QtRO inter-module calls.
 ///
-/// Requires [`set_qtro_callbacks`] to have been called before use.
-/// The C++ module host obtains a `delivery_module` QtRO replica via
-/// `logosAPI->getClient("delivery_module")` and wires the callbacks.
+/// Uses `logos_core_call_plugin_method_async` to call the `delivery_module`
+/// plugin directly through Logos Core's C IPC layer. Inbound messages arrive
+/// via `logos_core_register_event_listener("delivery_module", "messageReceived")`.
+///
+/// The delivery_module manages its own node lifecycle — this transport only
+/// calls `send`, `subscribe`, and `unsubscribe`.
 pub struct QtRODeliveryTransport {
-    _private: (),
+    subscriptions: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Vec<u8>>>>>,
+    /// Keep the event listener state alive so the FFI callback pointer stays valid.
+    _event_listener_state: Box<logos_core::EventListenerState>,
 }
 
 impl QtRODeliveryTransport {
     /// Create a new QtRO delivery transport.
     ///
-    /// Fails if [`set_qtro_callbacks`] has not been called.
+    /// Registers a `messageReceived` event listener on the `delivery_module`
+    /// plugin to receive inbound messages. Does NOT call `createNode` or
+    /// `start` — the external delivery_module manages its own lifecycle.
     pub fn new() -> Result<Self> {
-        callbacks()?; // verify callbacks are registered
-        Ok(Self { _private: () })
+        let subscriptions: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Vec<u8>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // Also register in the global topic_senders for backward compat with
+        // C++ hosts that call lmao_qtro_on_message directly.
+        let global_subs = Arc::clone(&subscriptions);
+
+        // Register event listener for inbound messages from delivery_module.
+        let (mut event_rx, event_state) =
+            logos_core::register_event_listener(PLUGIN, "messageReceived");
+
+        let subs = Arc::clone(&subscriptions);
+        tokio::spawn(async move {
+            while let Some(event_json) = event_rx.recv().await {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&event_json) {
+                    let topic = val
+                        .get("contentTopic")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let payload_b64 = val
+                        .get("payload")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+
+                    let payload =
+                        match base64::engine::general_purpose::STANDARD.decode(payload_b64) {
+                            Ok(p) => p,
+                            Err(_) => continue,
+                        };
+
+                    let guard = subs.lock().unwrap();
+                    if let Some(tx) = guard.get(topic) {
+                        let _ = tx.send(payload);
+                    }
+                }
+            }
+        });
+
+        // Sync the global topic_senders so lmao_qtro_on_message also works.
+        let global_ref = Arc::clone(&subscriptions);
+        let _ = TOPIC_SENDERS.get_or_init(|| global_ref);
+
+        Ok(Self {
+            subscriptions,
+            _event_listener_state: event_state,
+        })
     }
 }
 
 #[async_trait]
 impl Transport for QtRODeliveryTransport {
     async fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
-        let cbs = callbacks()?;
-        let topic_c = CString::new(topic)
-            .map_err(|_| TransportError::Transport("topic contains null byte".into()))?;
-        let payload_b64 = base64_encode(payload);
-        let payload_c = CString::new(payload_b64)
-            .map_err(|_| TransportError::Transport("base64 payload contains null byte".into()))?;
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        let result = logos_core::call_plugin_method(
+            PLUGIN,
+            "send",
+            &params_json(&[("contentTopic", topic), ("payload", &payload_b64)]),
+        )
+        .await
+        .map_err(|e| TransportError::Transport(format!("delivery_module send failed: {}", e)))?;
 
-        let rc = (cbs.publish)(topic_c.as_ptr(), payload_c.as_ptr(), cbs.user_data);
-        if rc != 0 {
+        if result.starts_with("error") || result.starts_with("Error") {
             return Err(TransportError::Transport(format!(
-                "QtRO publish failed (rc={})",
-                rc
+                "delivery_module send returned error: {}",
+                result
             )));
         }
         Ok(())
     }
 
     async fn subscribe(&self, topic: &str) -> Result<mpsc::Receiver<Vec<u8>>> {
-        let cbs = callbacks()?;
-        let topic_c = CString::new(topic)
-            .map_err(|_| TransportError::Transport("topic contains null byte".into()))?;
-
-        let rc = (cbs.subscribe)(topic_c.as_ptr(), cbs.user_data);
-        if rc != 0 {
+        let result = logos_core::call_plugin_method(
+            PLUGIN,
+            "subscribe",
+            &params_json(&[("contentTopic", topic)]),
+        )
+        .await
+        .map_err(|e| {
+            TransportError::Transport(format!("delivery_module subscribe failed: {}", e))
+        })?;
+        if result != "true" {
             return Err(TransportError::Transport(format!(
-                "QtRO subscribe failed (rc={})",
-                rc
+                "delivery_module subscribe returned: {}",
+                result
             )));
         }
 
-        // Register a channel for inbound messages on this topic.
         let (tx, rx_unbounded) = mpsc::unbounded_channel();
-        topic_senders()
+        self.subscriptions
             .lock()
             .unwrap()
             .insert(topic.to_string(), tx);
@@ -180,84 +211,25 @@ impl Transport for QtRODeliveryTransport {
 
     async fn unsubscribe(&self, topic: &str) -> Result<()> {
         // Remove local sender first.
-        topic_senders().lock().unwrap().remove(topic);
+        self.subscriptions.lock().unwrap().remove(topic);
 
-        let cbs = callbacks()?;
-        let topic_c = CString::new(topic)
-            .map_err(|_| TransportError::Transport("topic contains null byte".into()))?;
-
-        let rc = (cbs.unsubscribe)(topic_c.as_ptr(), cbs.user_data);
-        if rc != 0 {
+        let result = logos_core::call_plugin_method(
+            PLUGIN,
+            "unsubscribe",
+            &params_json(&[("contentTopic", topic)]),
+        )
+        .await
+        .map_err(|e| {
+            TransportError::Transport(format!("delivery_module unsubscribe failed: {}", e))
+        })?;
+        if result != "true" {
             return Err(TransportError::Transport(format!(
-                "QtRO unsubscribe failed (rc={})",
-                rc
+                "delivery_module unsubscribe returned: {}",
+                result
             )));
         }
         Ok(())
     }
-}
-
-// ---------------------------------------------------------------------------
-// Minimal base64 helpers (no external dep needed)
-// ---------------------------------------------------------------------------
-
-const B64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64_encode(input: &[u8]) -> String {
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B64_CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        out.push(B64_CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(B64_CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(B64_CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
-
-fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u32> {
-        match c {
-            b'A'..=b'Z' => Some((c - b'A') as u32),
-            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
-            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            b'=' => Some(0),
-            _ => None,
-        }
-    }
-    let bytes: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if bytes.len() % 4 != 0 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    for chunk in bytes.chunks(4) {
-        let a = val(chunk[0])?;
-        let b = val(chunk[1])?;
-        let c = val(chunk[2])?;
-        let d = val(chunk[3])?;
-        let triple = (a << 18) | (b << 12) | (c << 6) | d;
-        out.push((triple >> 16) as u8);
-        if chunk[2] != b'=' {
-            out.push((triple >> 8) as u8);
-        }
-        if chunk[3] != b'=' {
-            out.push(triple as u8);
-        }
-    }
-    Some(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -267,37 +239,46 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
 
     #[test]
-    fn base64_roundtrip() {
-        let cases: &[&[u8]] = &[b"", b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar"];
-        for case in cases {
-            let encoded = base64_encode(case);
-            let decoded = base64_decode(&encoded).unwrap();
-            assert_eq!(&decoded, case, "roundtrip failed for {:?}", case);
-        }
+    fn params_json_empty() {
+        assert_eq!(params_json(&[]), "[]");
     }
 
     #[test]
-    fn base64_encode_known() {
-        assert_eq!(base64_encode(b"Hello"), "SGVsbG8=");
-        assert_eq!(base64_encode(b"Hello!"), "SGVsbG8h");
+    fn params_json_single_pair() {
+        let result = params_json(&[("cfg", "value1")]);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "cfg");
+        assert_eq!(arr[0]["value"], "value1");
+        assert_eq!(arr[0]["type"], "string");
     }
 
     #[test]
-    fn base64_decode_invalid() {
-        assert!(base64_decode("abc").is_none()); // not multiple of 4
+    fn params_json_multiple_pairs() {
+        let result = params_json(&[("contentTopic", "/my/topic"), ("payload", "abc123")]);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["name"], "contentTopic");
+        assert_eq!(arr[0]["value"], "/my/topic");
+        assert_eq!(arr[1]["name"], "payload");
+        assert_eq!(arr[1]["value"], "abc123");
     }
 
     #[test]
-    fn transport_new_without_callbacks_fails() {
-        // CALLBACKS is a OnceLock — if not set, new() should fail.
-        // Note: this test may pass or fail depending on test ordering since OnceLock is global.
-        // We test the error path only if callbacks haven't been set yet.
-        if CALLBACKS.get().is_none() {
-            let result = QtRODeliveryTransport::new();
-            assert!(result.is_err());
-        }
+    fn params_json_is_valid_json() {
+        let result = params_json(&[("a", "1"), ("b", "2"), ("c", "3")]);
+        let parsed: std::result::Result<serde_json::Value, _> = serde_json::from_str(&result);
+        assert!(parsed.is_ok(), "params_json should produce valid JSON");
+    }
+
+    #[test]
+    fn plugin_constant() {
+        assert_eq!(PLUGIN, "delivery_module");
     }
 
     #[test]
@@ -307,7 +288,7 @@ mod tests {
         senders.lock().unwrap().insert("test/topic".into(), tx);
 
         let topic = CString::new("test/topic").unwrap();
-        let payload = base64_encode(b"hello");
+        let payload = base64::engine::general_purpose::STANDARD.encode(b"hello");
         let payload_c = CString::new(payload).unwrap();
 
         unsafe {
@@ -324,7 +305,8 @@ mod tests {
     #[test]
     fn on_message_unknown_topic_ignored() {
         let topic = CString::new("no/such/topic").unwrap();
-        let payload = CString::new(base64_encode(b"data")).unwrap();
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(b"data");
+        let payload = CString::new(payload_b64).unwrap();
 
         // Should not panic
         unsafe {
@@ -349,11 +331,5 @@ mod tests {
         assert!(rx.try_recv().is_err());
 
         senders.lock().unwrap().remove("b64test");
-    }
-
-    #[test]
-    fn callbacks_struct_is_send_and_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<QtROCallbacks>();
     }
 }

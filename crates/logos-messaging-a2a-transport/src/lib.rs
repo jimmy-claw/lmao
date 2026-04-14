@@ -46,7 +46,7 @@ pub mod logos_core_transport;
 pub use logos_core_transport::LogosCoreDeliveryTransport;
 
 #[cfg(feature = "logos-delivery")]
-pub mod logos_delivery_qtro;
+mod logos_delivery_qtro;
 #[cfg(feature = "logos-delivery")]
 pub use logos_delivery_qtro::QtRODeliveryTransport;
 

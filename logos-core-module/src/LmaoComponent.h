@@ -5,13 +5,13 @@
 #include <QString>
 
 class LmaoBackend;
-class QRemoteObjectDynamicReplica;
 
 /**
  * LmaoComponent — Logos Core IComponent plugin for LMAO (A2A over Waku).
  *
  * Provides agent discovery and task sending over the Waku network.
- * Connects to delivery_module via QtRO for message transport.
+ * Delivery transport uses logos_core_call_plugin_method_async directly
+ * from Rust to call the delivery_module plugin via Logos Core IPC.
  */
 class LmaoComponent : public QObject, public IComponent {
     Q_OBJECT
@@ -28,18 +28,10 @@ public:
     QString name() const { return QStringLiteral("lmao"); }
     QString version() const;
 
-    /// Initialize the LMAO node and wire up QtRO delivery transport.
+    /// Initialize the LMAO node. Delivery transport is handled by the Rust
+    /// layer via logos_core_call_plugin_method_async.
     void initialize(LogosAPI* logosAPI = nullptr);
-
-private slots:
-    /// Forward inbound delivery_module messages to the Rust transport layer.
-    void onDeliveryMessage(const QString& eventJson);
 
 private:
     bool m_initialized = false;
-    /// QtRO replica for delivery_module — kept alive for the component lifetime.
-    QRemoteObjectDynamicReplica* m_deliveryReplica = nullptr;
-
-    /// Set up the QtRO delivery transport bridge to Rust via FFI callbacks.
-    void setupDeliveryTransport(LogosAPI* logosAPI);
 };

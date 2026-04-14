@@ -8,7 +8,7 @@ default = ["rest"]
 rest = ["reqwest"]
 logos-core = ["base64"]
 logos-mix = ["logos-core"]
-logos-delivery = []
+logos-delivery = ["logos-core"]
 native-waku = ["waku-bindings"]
 
 [dependencies]
