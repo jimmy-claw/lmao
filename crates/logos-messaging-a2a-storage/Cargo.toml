@@ -9,13 +9,14 @@ default = ["rest"]
 rest = ["reqwest"]
 logos-core = ["base64"]
 libstorage = ["dep:storage-bindings", "dep:tempfile"]
+storage-module = ["reqwest", "serde_json"]
 
 [dependencies]
 tokio = { workspace = true }
 async-trait = { workspace = true }
 
 # REST backend
-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["multipart"] }
 
 # Logos Core native backend
 base64 = { version = "0.22", optional = true }
@@ -23,6 +24,9 @@ base64 = { version = "0.22", optional = true }
 # Libstorage native backend
 storage-bindings = { version = "0.2", optional = true }
 tempfile = { version = "3", optional = true }
+
+# Storage module client
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
