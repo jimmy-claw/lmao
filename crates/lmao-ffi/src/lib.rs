@@ -214,6 +214,16 @@ pub extern "C" fn lmao_version() -> *mut c_char {
     to_cstring(env!("CARGO_PKG_VERSION").to_string())
 }
 
+// ── QtRO Delivery Transport Bridge ────────────────────────────────────────
+//
+// The delivery transport now uses logos_core_call_plugin_method_async directly
+// to call the real logos-delivery-module. The old callback injection
+// (lmao_qtro_set_callbacks) is no longer needed — the Rust transport calls
+// delivery_module methods via the Logos Core C IPC layer.
+//
+// lmao_qtro_on_message is still exported from the transport crate for backward
+// compatibility with C++ hosts that forward messageReceived events manually.
+
 #[cfg(test)]
 mod tests {
     use super::*;

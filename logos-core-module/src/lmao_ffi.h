@@ -43,4 +43,13 @@ void lmao_free_string(char *s);
  */
 char *lmao_version(void);
 
+/*
+ * Delivery transport now uses logos_core_call_plugin_method_async directly
+ * from Rust. The old callback injection (lmao_qtro_set_callbacks) and
+ * callback typedefs are removed.
+ *
+ * lmao_qtro_on_message() is still available from the transport crate for
+ * backward compatibility with C++ hosts that forward messageReceived events.
+ */
+
 #endif  /* LMAO_FFI_H */

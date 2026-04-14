@@ -10,6 +10,8 @@ class LmaoBackend;
  * LmaoComponent — Logos Core IComponent plugin for LMAO (A2A over Waku).
  *
  * Provides agent discovery and task sending over the Waku network.
+ * Delivery transport uses logos_core_call_plugin_method_async directly
+ * from Rust to call the delivery_module plugin via Logos Core IPC.
  */
 class LmaoComponent : public QObject, public IComponent {
     Q_OBJECT
@@ -26,8 +28,9 @@ public:
     QString name() const { return QStringLiteral("lmao"); }
     QString version() const;
 
-    /// Initialize the LMAO node (calls into FFI).
-    void initialize();
+    /// Initialize the LMAO node. Delivery transport is handled by the Rust
+    /// layer via logos_core_call_plugin_method_async.
+    void initialize(LogosAPI* logosAPI = nullptr);
 
 private:
     bool m_initialized = false;

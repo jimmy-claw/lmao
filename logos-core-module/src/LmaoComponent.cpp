@@ -14,6 +14,12 @@ extern "C" {
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// Delivery transport now uses logos_core_call_plugin_method_async directly
+// from Rust — no C++ callback injection needed. The Rust transport calls
+// the delivery_module plugin methods through the Logos Core C IPC layer.
+// ---------------------------------------------------------------------------
+
 LmaoComponent::LmaoComponent(QObject* parent)
     : QObject(parent)
 {
@@ -35,12 +41,15 @@ QString LmaoComponent::version() const
     return v;
 }
 
-void LmaoComponent::initialize()
+void LmaoComponent::initialize(LogosAPI* logosAPI)
 {
     if (m_initialized)
         return;
 
     qDebug() << "LmaoComponent::initialize — starting LMAO node";
+
+    // Delivery transport now uses logos_core_call_plugin_method_async directly
+    // from Rust — no C++ callback setup needed.
 
     // Trigger lazy node init inside lmao-ffi by fetching the agent card.
     char* raw = lmao_get_agent_card();
@@ -52,9 +61,9 @@ void LmaoComponent::initialize()
     m_initialized = true;
 }
 
-QWidget* LmaoComponent::createWidget(LogosAPI* /*logosAPI*/)
+QWidget* LmaoComponent::createWidget(LogosAPI* logosAPI)
 {
-    initialize();
+    initialize(logosAPI);
 
     auto* widget = new QQuickWidget();
     widget->setMinimumSize(500, 400);
@@ -77,3 +86,6 @@ void LmaoComponent::destroyWidget(QWidget* widget)
 {
     delete widget;
 }
+
+// onDeliveryMessage removed — inbound messages from delivery_module are now
+// handled directly by the Rust transport via logos_core_register_event_listener.
