@@ -2414,6 +2414,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "logos-messaging-a2a-chat-sdk"
+version = "0.1.0"
+dependencies = [
+ "logos-messaging-a2a-core",
+ "logos-messaging-a2a-crypto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "logos-messaging-a2a-cli"
 version = "0.1.0"
 dependencies = [
