@@ -197,38 +197,87 @@ pub extern "C" fn lmao_get_agent_card() -> *mut c_char {
     }))
 }
 
-/// Get the current metrics snapshot.
+/// Get a snapshot of operational metrics as JSON.
 ///
-/// Returns: { "success": true, "tasks_sent": 0, "tasks_received": 0, ... }
+/// Returns: { "success": true, "metrics": { "tasks_sent": 0, ... } }
 #[no_mangle]
 pub extern "C" fn lmao_get_metrics() -> *mut c_char {
     let node = get_or_init_node();
     let snap = node.metrics();
     match serde_json::to_value(&snap) {
-        Ok(v) => success_json(v),
+        Ok(v) => success_json(serde_json::json!({ "metrics": v })),
         Err(e) => error_json(&e.to_string()),
     }
 }
 
-/// Get agent identity and topic information.
+/// Get node info: identity, topics, encryption status.
 ///
-/// Returns: { "success": true, "public_key": "...", "task_topic": "...",
-///            "discovery_topic": "...", "presence_topic": "...", "encryption": false }
+/// Returns: { "success": true, "info": { "name": "...", "public_key": "...",
+///            "encrypted": true/false, "topics": { ... }, "peers_count": N } }
 #[no_mangle]
-pub extern "C" fn lmao_get_info() -> *mut c_char {
+pub extern "C" fn lmao_get_node_info() -> *mut c_char {
     let node = get_or_init_node();
-    let pubkey = node.pubkey().to_string();
-    let task_topic = logos_messaging_a2a_core::topics::task_topic(&pubkey);
-    let encrypt = node.card.intro_bundle.is_some();
+    let card = &node.card;
+    let encrypted = card.intro_bundle.is_some();
+    let pubkey = node.pubkey();
+
+    let peers_count = node.peers().len();
+    let sessions = node.list_sessions();
+
     success_json(serde_json::json!({
-        "public_key": pubkey,
-        "task_topic": task_topic,
-        "discovery_topic": logos_messaging_a2a_core::topics::DISCOVERY,
-        "presence_topic": logos_messaging_a2a_core::topics::PRESENCE,
-        "encryption": encrypt,
+        "info": {
+            "name": card.name,
+            "description": card.description,
+            "version": card.version,
+            "capabilities": card.capabilities,
+            "public_key": pubkey,
+            "encrypted": encrypted,
+            "peers_count": peers_count,
+            "sessions_count": sessions.len(),
+            "topics": {
+                "task": logos_messaging_a2a_core::topics::task_topic(pubkey),
+                "discovery": logos_messaging_a2a_core::topics::DISCOVERY,
+                "presence": logos_messaging_a2a_core::topics::PRESENCE,
+            }
+        }
     }))
 }
 
+/// Get live peers as JSON array.
+///
+/// Returns: { "success": true, "peers": [ { "agent_id": "...", "name": "...", ... } ] }
+#[no_mangle]
+pub extern "C" fn lmao_get_peers() -> *mut c_char {
+    let node = get_or_init_node();
+    let peers = node.peers().all_live();
+    let peers_json: Vec<serde_json::Value> = peers
+        .iter()
+        .map(|(id, info)| {
+            serde_json::json!({
+                "agent_id": id,
+                "name": info.name,
+                "capabilities": info.capabilities,
+                "waku_topic": info.waku_topic,
+                "last_seen": info.last_seen,
+                "ttl_secs": info.ttl_secs,
+            })
+        })
+        .collect();
+    success_json(serde_json::json!({ "peers": peers_json }))
+}
+
+/// Get active sessions as JSON array.
+///
+/// Returns: { "success": true, "sessions": [ { "id": "...", ... } ] }
+#[no_mangle]
+pub extern "C" fn lmao_get_sessions() -> *mut c_char {
+    let node = get_or_init_node();
+    let sessions = node.list_sessions();
+    match serde_json::to_value(&sessions) {
+        Ok(v) => success_json(serde_json::json!({ "sessions": v })),
+        Err(e) => error_json(&e.to_string()),
+    }
+}
 /// Free a string returned by any lmao_* function.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]

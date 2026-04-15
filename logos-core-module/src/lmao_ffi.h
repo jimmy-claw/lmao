@@ -34,18 +34,32 @@ char *lmao_send_task(const char *args_json);
 char *lmao_get_agent_card(void);
 
 /**
- * Get the current metrics snapshot.
+ * Get a snapshot of operational metrics as JSON.
  *
- * Returns: { "success": true, "tasks_sent": 0, ... }
+ * Returns: { "success": true, "metrics": { "tasks_sent": 0, ... } }
  */
 char *lmao_get_metrics(void);
 
 /**
- * Get agent identity and topic information.
+ * Get node info: identity, topics, encryption status, peer/session counts.
  *
- * Returns: { "success": true, "public_key": "...", "task_topic": "...", ... }
+ * Returns: { "success": true, "info": { "name": "...", ... } }
  */
-char *lmao_get_info(void);
+char *lmao_get_node_info(void);
+
+/**
+ * Get live peers as JSON array.
+ *
+ * Returns: { "success": true, "peers": [ ... ] }
+ */
+char *lmao_get_peers(void);
+
+/**
+ * Get active sessions as JSON array.
+ *
+ * Returns: { "success": true, "sessions": [ ... ] }
+ */
+char *lmao_get_sessions(void);
 
 /**
  * Free a string returned by any lmao_* function.
