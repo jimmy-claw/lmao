@@ -55,3 +55,7 @@ if(APPLE)
         INSTALL_RPATH "@loader_path"
     )
 endif()
+
+# ── Tests ────────────────────────────────────────────────────────────────────
+enable_testing()
+add_subdirectory(tests)

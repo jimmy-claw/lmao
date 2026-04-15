@@ -6,14 +6,13 @@
 #include <QJsonObject>
 #include <QJsonArray>
 
+#ifdef __cplusplus
 extern "C" {
-    char *lmao_get_agent_card(void);
-    char *lmao_get_metrics(void);
-    char *lmao_get_info(void);
-    char *lmao_discover_agents(const char *args_json);
-    char *lmao_version(void);
-    void  lmao_free_string(char *s);
+#endif
+#include "lmao_ffi.h"
+#ifdef __cplusplus
 }
+#endif
 
 class DashboardBackend : public QObject {
     Q_OBJECT

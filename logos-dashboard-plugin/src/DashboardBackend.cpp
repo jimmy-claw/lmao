@@ -21,7 +21,7 @@ QString DashboardBackend::callFfiStr(char *raw)
 
 void DashboardBackend::refreshInfo()
 {
-    QString json = callFfiStr(lmao_get_info());
+    QString json = callFfiStr(lmao_get_node_info());
     QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8());
     if (!doc.isObject()) {
         emit errorOccurred(QStringLiteral("Failed to parse info response"));
@@ -32,11 +32,14 @@ void DashboardBackend::refreshInfo()
         emit errorOccurred(obj.value("error").toString());
         return;
     }
-    m_publicKey = obj.value("public_key").toString();
-    m_taskTopic = obj.value("task_topic").toString();
-    m_discoveryTopic = obj.value("discovery_topic").toString();
-    m_presenceTopic = obj.value("presence_topic").toString();
-    m_encryption = obj.value("encryption").toBool();
+    QJsonObject info = obj.value("info").toObject();
+    m_publicKey = info.value("public_key").toString();
+    m_encryption = info.value("encrypted").toBool();
+
+    QJsonObject topics = info.value("topics").toObject();
+    m_taskTopic = topics.value("task").toString();
+    m_discoveryTopic = topics.value("discovery").toString();
+    m_presenceTopic = topics.value("presence").toString();
     emit infoChanged();
 }
 
@@ -53,9 +56,9 @@ void DashboardBackend::refreshMetrics()
         emit errorOccurred(obj.value("error").toString());
         return;
     }
-    obj.remove("success");
-    m_peersDiscovered = obj.value("peers_discovered").toInt();
-    emit metricsChanged(obj);
+    QJsonObject metrics = obj.value("metrics").toObject();
+    m_peersDiscovered = metrics.value("peers_discovered").toInt();
+    emit metricsChanged(metrics);
 }
 
 QJsonObject DashboardBackend::getMetrics()
@@ -64,8 +67,7 @@ QJsonObject DashboardBackend::getMetrics()
     QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8());
     if (!doc.isObject()) return {};
     QJsonObject obj = doc.object();
-    obj.remove("success");
-    return obj;
+    return obj.value("metrics").toObject();
 }
 
 QString DashboardBackend::getAgentCardJson()
