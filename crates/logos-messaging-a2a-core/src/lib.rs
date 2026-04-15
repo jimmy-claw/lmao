@@ -22,6 +22,8 @@ pub mod agent;
 pub mod delegation;
 /// Wire envelope for all Waku messages.
 pub mod envelope;
+/// Decentralized skill marketplace types.
+pub mod marketplace;
 /// Signed presence announcements for ephemeral peer discovery.
 pub mod presence;
 pub mod registry;

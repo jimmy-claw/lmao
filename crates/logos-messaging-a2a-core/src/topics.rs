@@ -8,6 +8,11 @@ pub const DISCOVERY: &str = "/waku-a2a/1/discovery/proto";
 /// All agents subscribe on startup to discover live peers.
 pub const PRESENCE: &str = "/lmao/1/presence/proto";
 
+/// Well-known topic for skill marketplace announcements.
+/// Agents publish new/updated skill registrations here; subscribers
+/// discover available skills without polling the LEZ registry.
+pub const SKILL_MARKETPLACE: &str = "/lmao/1/skill-marketplace/proto";
+
 /// Returns the Waku content topic where a specific agent receives tasks.
 ///
 /// Each agent listens on a topic derived from its compressed secp256k1
