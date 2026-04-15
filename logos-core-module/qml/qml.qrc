@@ -4,6 +4,12 @@
     <file>qmldir</file>
     <file>Theme.qml</file>
     <file>LmaoView.qml</file>
+    <file>FleetView.qml</file>
+    <file>DashboardView.qml</file>
+    <file>MetricsView.qml</file>
     <file>AgentCard.qml</file>
+    <file>InfoRow.qml</file>
+    <file>MetricSection.qml</file>
+    <file>MetricCounter.qml</file>
   </qresource>
 </RCC>

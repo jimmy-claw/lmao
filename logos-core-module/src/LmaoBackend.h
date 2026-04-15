@@ -19,10 +19,16 @@ public:
     Q_INVOKABLE QString discoverAgents(const QString& timeoutMs);
     Q_INVOKABLE QString sendTask(const QString& agentPubkey, const QString& taskText);
     Q_INVOKABLE QString getAgentCard();
+    Q_INVOKABLE QString getMetrics();
+    Q_INVOKABLE QString getNodeInfo();
+    Q_INVOKABLE QString getPeers();
+    Q_INVOKABLE QString getSessions();
 
 signals:
     void agentsDiscovered(const QString& json);
     void taskSent(const QString& json);
+    void metricsUpdated(const QString& json);
+    void nodeInfoUpdated(const QString& json);
     void errorOccurred(const QString& error);
 
 private:
