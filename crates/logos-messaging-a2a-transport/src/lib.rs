@@ -3,7 +3,8 @@
 //! Provides a unified [`Transport`] trait with multiple backend implementations:
 //!
 //! - **REST** (`rest` feature): nwaku REST API transport for communicating with a running nwaku node.
-//! - **Logos Core** (`logos-core` feature): native IPC transport via the Logos Core `delivery_module` plugin.
+//! - **Logos Core Delivery** (`logos-core` feature): broadcast IPC transport via the Logos Core `delivery_module` plugin.
+//! - **Logos Core Mix** (`logos-core` feature): private point-to-point IPC transport via the Logos Core `mix_module` plugin.
 //! - **Native Waku** (`native-waku` feature): libwaku FFI transport via the `waku-bindings` crate.
 //! - **In-memory**: zero-dependency mock transport for testing (`memory` module, always available).
 //!
@@ -44,6 +45,11 @@ pub mod logos_core_transport;
 #[cfg(feature = "logos-core")]
 pub use logos_core_transport::LogosCoreDeliveryTransport;
 
+#[cfg(feature = "logos-core")]
+pub mod logos_core_mix_transport;
+#[cfg(feature = "logos-core")]
+pub use logos_core_mix_transport::LogosCoreMixTransport;
+
 #[cfg(feature = "native-waku")]
 mod waku_bindings_transport;
 #[cfg(feature = "native-waku")]
@@ -54,6 +60,7 @@ pub use waku_bindings_transport::NativeWakuTransport;
 /// Implementations:
 /// - `LogosMessagingTransport`: nwaku REST API (requires running nwaku node, `rest` feature)
 /// - `LogosCoreDeliveryTransport`: Logos Core IPC via delivery_module (`logos-core` feature)
+/// - `LogosCoreMixTransport`: Logos Core IPC via mix_module for private point-to-point routing (`logos-core` feature)
 /// - `NativeWakuTransport`: native libwaku FFI via waku-bindings (`native-waku` feature)
 /// - `InMemoryTransport`: in-process mock for testing (no external deps)
 #[async_trait]
