@@ -9,6 +9,7 @@
 
 pub mod delegation;
 pub mod discovery;
+pub mod marketplace;
 pub mod metrics;
 pub mod payment;
 pub mod presence;

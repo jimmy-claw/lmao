@@ -2,6 +2,7 @@ use logos_messaging_a2a_crypto::EncryptedPayload;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentCard;
+use crate::marketplace::SkillRecord;
 use crate::presence::PresenceAnnouncement;
 use crate::task::{Task, TaskStreamChunk};
 
@@ -32,6 +33,9 @@ pub enum A2AEnvelope {
     Presence(PresenceAnnouncement),
     /// A streaming chunk carrying incremental task output (e.g. LLM tokens).
     StreamChunk(TaskStreamChunk),
+    /// A skill marketplace announcement — broadcast when a skill is
+    /// published or updated so subscribers can discover it.
+    SkillAnnouncement(SkillRecord),
 }
 
 #[cfg(test)]
