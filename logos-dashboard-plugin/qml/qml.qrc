@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/lmao-dashboard">
+        <file>qmldir</file>
+        <file>Theme.qml</file>
+        <file>DashboardView.qml</file>
+        <file>MetricCard.qml</file>
+    </qresource>
+</RCC>

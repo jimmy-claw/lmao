@@ -197,6 +197,87 @@ pub extern "C" fn lmao_get_agent_card() -> *mut c_char {
     }))
 }
 
+/// Get a snapshot of operational metrics as JSON.
+///
+/// Returns: { "success": true, "metrics": { "tasks_sent": 0, ... } }
+#[no_mangle]
+pub extern "C" fn lmao_get_metrics() -> *mut c_char {
+    let node = get_or_init_node();
+    let snap = node.metrics();
+    match serde_json::to_value(&snap) {
+        Ok(v) => success_json(serde_json::json!({ "metrics": v })),
+        Err(e) => error_json(&e.to_string()),
+    }
+}
+
+/// Get node info: identity, topics, encryption status.
+///
+/// Returns: { "success": true, "info": { "name": "...", "public_key": "...",
+///            "encrypted": true/false, "topics": { ... }, "peers_count": N } }
+#[no_mangle]
+pub extern "C" fn lmao_get_node_info() -> *mut c_char {
+    let node = get_or_init_node();
+    let card = &node.card;
+    let encrypted = card.intro_bundle.is_some();
+    let pubkey = node.pubkey();
+
+    let peers_count = node.peers().len();
+    let sessions = node.list_sessions();
+
+    success_json(serde_json::json!({
+        "info": {
+            "name": card.name,
+            "description": card.description,
+            "version": card.version,
+            "capabilities": card.capabilities,
+            "public_key": pubkey,
+            "encrypted": encrypted,
+            "peers_count": peers_count,
+            "sessions_count": sessions.len(),
+            "topics": {
+                "task": logos_messaging_a2a_core::topics::task_topic(pubkey),
+                "discovery": logos_messaging_a2a_core::topics::DISCOVERY,
+                "presence": logos_messaging_a2a_core::topics::PRESENCE,
+            }
+        }
+    }))
+}
+
+/// Get live peers as JSON array.
+///
+/// Returns: { "success": true, "peers": [ { "agent_id": "...", "name": "...", ... } ] }
+#[no_mangle]
+pub extern "C" fn lmao_get_peers() -> *mut c_char {
+    let node = get_or_init_node();
+    let peers = node.peers().all_live();
+    let peers_json: Vec<serde_json::Value> = peers
+        .iter()
+        .map(|(id, info)| {
+            serde_json::json!({
+                "agent_id": id,
+                "name": info.name,
+                "capabilities": info.capabilities,
+                "waku_topic": info.waku_topic,
+                "last_seen": info.last_seen,
+                "ttl_secs": info.ttl_secs,
+            })
+        })
+        .collect();
+    success_json(serde_json::json!({ "peers": peers_json }))
+}
+
+/// Get active sessions as JSON array.
+///
+/// Returns: { "success": true, "sessions": [ { "id": "...", ... } ] }
+#[no_mangle]
+pub extern "C" fn lmao_get_sessions() -> *mut c_char {
+    let node = get_or_init_node();
+    let sessions = node.list_sessions();
+    match serde_json::to_value(&sessions) {
+        Ok(v) => success_json(serde_json::json!({ "sessions": v })),
+        Err(e) => error_json(&e.to_string()),
+    }
+}
 /// Free a string returned by any lmao_* function.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -218,6 +299,7 @@ pub extern "C" fn lmao_version() -> *mut c_char {
 mod tests {
     use super::*;
     use logos_messaging_a2a_core::{A2AEnvelope, AgentCard, Message, Part, Task, TaskState};
+    use logos_messaging_a2a_node::MetricsSnapshot;
 
     /// Helper: read a *mut c_char back into a String, then free it.
     unsafe fn read_and_free(ptr: *mut c_char) -> String {
@@ -1242,5 +1324,101 @@ mod tests {
         for ptr in ptrs {
             lmao_free_string(ptr);
         }
+    }
+
+    // ── lmao_get_metrics unit tests ───────────────────────────────────────
+    // These construct a MetricsSnapshot directly to test serialization.
+
+    #[test]
+    fn test_metrics_snapshot_serializes_all_fields() {
+        let snap = MetricsSnapshot {
+            tasks_sent: 1,
+            tasks_received: 2,
+            tasks_failed: 3,
+            messages_published: 4,
+            messages_received: 5,
+            discoveries: 6,
+            announcements_sent: 7,
+            peers_discovered: 8,
+            encryptions: 9,
+            decryptions: 10,
+            sessions_created: 11,
+            delegations_sent: 12,
+            stream_chunks_sent: 13,
+            stream_chunks_received: 14,
+            retry_attempts: 15,
+            retries_exhausted: 16,
+            responses_sent: 17,
+        };
+        let v = serde_json::to_value(&snap).unwrap();
+        assert_eq!(v["tasks_sent"], 1);
+        assert_eq!(v["responses_sent"], 17);
+        assert_eq!(v.as_object().unwrap().len(), 17);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_roundtrips_through_success_json() {
+        let snap = MetricsSnapshot {
+            tasks_sent: 42,
+            tasks_received: 0,
+            tasks_failed: 0,
+            messages_published: 0,
+            messages_received: 0,
+            discoveries: 0,
+            announcements_sent: 0,
+            peers_discovered: 0,
+            encryptions: 0,
+            decryptions: 0,
+            sessions_created: 0,
+            delegations_sent: 0,
+            stream_chunks_sent: 0,
+            stream_chunks_received: 0,
+            retry_attempts: 0,
+            retries_exhausted: 0,
+            responses_sent: 0,
+        };
+        let v = serde_json::to_value(&snap).unwrap();
+        let ptr = success_json(v);
+        let result = unsafe { read_json_and_free(ptr) };
+        assert_eq!(result["success"], true);
+        assert_eq!(result["tasks_sent"], 42);
+    }
+
+    // ── lmao_get_info unit tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_info_json_structure() {
+        let info = serde_json::json!({
+            "public_key": "02abcdef",
+            "task_topic": "/waku-a2a/1/task/02abcdef/proto",
+            "discovery_topic": logos_messaging_a2a_core::topics::DISCOVERY,
+            "presence_topic": logos_messaging_a2a_core::topics::PRESENCE,
+            "encryption": false,
+        });
+        let ptr = success_json(info);
+        let result = unsafe { read_json_and_free(ptr) };
+        assert_eq!(result["success"], true);
+        assert_eq!(result["public_key"], "02abcdef");
+        assert!(result["task_topic"].as_str().unwrap().contains("02abcdef"));
+        assert_eq!(result["encryption"], false);
+    }
+
+    #[test]
+    fn test_info_topics_are_correct_constants() {
+        assert_eq!(
+            logos_messaging_a2a_core::topics::DISCOVERY,
+            "/waku-a2a/1/discovery/proto"
+        );
+        assert_eq!(
+            logos_messaging_a2a_core::topics::PRESENCE,
+            "/lmao/1/presence/proto"
+        );
+    }
+
+    #[test]
+    fn test_info_task_topic_format() {
+        let pubkey = "02aabbccdd";
+        let topic = logos_messaging_a2a_core::topics::task_topic(pubkey);
+        assert_eq!(topic, "/waku-a2a/1/task/02aabbccdd/proto");
     }
 }

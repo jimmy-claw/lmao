@@ -1,0 +1,10 @@
+name: lmao-dashboard
+version: 0.1.0
+type: core
+category: monitoring
+description: "LMAO Agent Dashboard — monitoring and metrics for A2A agents"
+external_library:
+  name: liblmao_ffi
+  vendor_path: lib
+cmake_extra_sources:
+  - src/DashboardBackend.cpp

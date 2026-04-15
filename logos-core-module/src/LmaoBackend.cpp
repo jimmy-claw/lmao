@@ -62,3 +62,27 @@ QString LmaoBackend::getAgentCard()
     qDebug() << "LmaoBackend::getAgentCard";
     return callFfiStr(lmao_get_agent_card());
 }
+
+QString LmaoBackend::getMetrics()
+{
+    const QString result = callFfiStr(lmao_get_metrics());
+    emit metricsUpdated(result);
+    return result;
+}
+
+QString LmaoBackend::getNodeInfo()
+{
+    const QString result = callFfiStr(lmao_get_node_info());
+    emit nodeInfoUpdated(result);
+    return result;
+}
+
+QString LmaoBackend::getPeers()
+{
+    return callFfiStr(lmao_get_peers());
+}
+
+QString LmaoBackend::getSessions()
+{
+    return callFfiStr(lmao_get_sessions());
+}
