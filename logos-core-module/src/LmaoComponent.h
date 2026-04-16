@@ -5,11 +5,13 @@
 #include <QString>
 
 class LmaoBackend;
+class DeliveryTransport;
 
 /**
  * LmaoComponent — Logos Core IComponent plugin for LMAO (A2A over Waku).
  *
  * Provides agent discovery and task sending over the Waku network.
+ * Uses QtRO to call delivery_module for message transport (issue #77).
  */
 class LmaoComponent : public QObject, public IComponent {
     Q_OBJECT
@@ -31,4 +33,6 @@ public:
 
 private:
     bool m_initialized = false;
+    LogosAPI* m_logosAPI = nullptr;
+    DeliveryTransport* m_delivery = nullptr;
 };
