@@ -215,6 +215,61 @@ pub extern "C" fn lmao_send_task(args_json: *const c_char) -> *mut c_char {
     }
 }
 
+/// Build a task envelope without sending it — for use with external transports (QtRO).
+///
+/// args_json: { "agent_pubkey": "02...", "task_text": "Hello" }
+///
+/// Returns: { "success": true, "task_id": "...", "topic": "/lmao/1/task/...",
+///            "payload_b64": "<base64-encoded A2A envelope>" }
+///
+/// The caller (e.g. C++ DeliveryTransport) can send the payload to the topic
+/// via QtRO inter-module call to delivery_module, bypassing the Rust transport (issue #143).
+#[no_mangle]
+pub extern "C" fn lmao_build_task_envelope(args_json: *const c_char) -> *mut c_char {
+    use logos_messaging_a2a_core::{A2AEnvelope, Task};
+
+    let s = match cstr_to_str(args_json) {
+        Ok(s) => s,
+        Err(e) => return error_json(&e),
+    };
+
+    let v: serde_json::Value = match serde_json::from_str(s) {
+        Ok(v) => v,
+        Err(e) => return error_json(&format!("JSON parse error: {}", e)),
+    };
+
+    let agent_pubkey = match v.get("agent_pubkey").and_then(|s| s.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_json("missing 'agent_pubkey'"),
+    };
+
+    let task_text = match v.get("task_text").and_then(|s| s.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_json("missing 'task_text'"),
+    };
+
+    let node = get_or_init_node();
+    let task = Task::new(node.pubkey(), &agent_pubkey, &task_text);
+    let topic = topics::task_topic(&agent_pubkey);
+
+    let envelope = A2AEnvelope::Task(task.clone());
+    let envelope_bytes = match serde_json::to_vec(&envelope) {
+        Ok(b) => b,
+        Err(e) => return error_json(&format!("envelope serialization error: {}", e)),
+    };
+
+    use base64::Engine;
+    let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&envelope_bytes);
+
+    success_json(serde_json::json!({
+        "task_id": task.id,
+        "from": task.from,
+        "to": task.to,
+        "topic": topic,
+        "payload_b64": payload_b64,
+    }))
+}
+
 /// Get this agent's card as JSON.
 ///
 /// Returns: { "success": true, "card": { "name": "...", ... } }
@@ -284,6 +339,7 @@ pub extern "C" fn lmao_version() -> *mut c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use logos_messaging_a2a_core::{A2AEnvelope, AgentCard, Message, Part, Task, TaskState};
 
     /// Helper: read a *mut c_char back into a String, then free it.
@@ -1397,6 +1453,68 @@ mod tests {
             assert_eq!(v["tasks_sent"], 0);
             assert_eq!(v["tasks_received"], 0);
             assert_eq!(v["tasks_failed"], 0);
+        }
+    }
+
+    // ── lmao_build_task_envelope tests ────────────────────────────────────
+
+    #[test]
+    fn test_build_task_envelope_null_pointer() {
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(std::ptr::null())) };
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error"], "null pointer");
+    }
+
+    #[test]
+    fn test_build_task_envelope_invalid_json() {
+        let input = CString::new("not json").unwrap();
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(input.as_ptr())) };
+        assert_eq!(v["success"], false);
+        assert!(v["error"].as_str().unwrap().contains("JSON parse error"));
+    }
+
+    #[test]
+    fn test_build_task_envelope_missing_agent_pubkey() {
+        let input = CString::new(r#"{"task_text": "hello"}"#).unwrap();
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(input.as_ptr())) };
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error"], "missing 'agent_pubkey'");
+    }
+
+    #[test]
+    fn test_build_task_envelope_missing_task_text() {
+        let input = CString::new(r#"{"agent_pubkey": "02aabb"}"#).unwrap();
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(input.as_ptr())) };
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error"], "missing 'task_text'");
+    }
+
+    #[test]
+    fn test_build_task_envelope_returns_envelope_fields() {
+        let input =
+            CString::new(r#"{"agent_pubkey": "02aabb", "task_text": "hello"}"#).unwrap();
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(input.as_ptr())) };
+        // This triggers node init — if it succeeds, check envelope fields
+        if v["success"] == true {
+            assert!(v["task_id"].is_string());
+            assert!(v["topic"].as_str().unwrap().contains("/waku-a2a/"));
+            assert!(v["payload_b64"].is_string());
+            assert_eq!(v["to"], "02aabb");
+
+            // Verify payload_b64 is valid base64 that decodes to a valid A2A envelope
+            let b64 = v["payload_b64"].as_str().unwrap();
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .expect("payload_b64 should be valid base64");
+            let envelope: A2AEnvelope =
+                serde_json::from_slice(&decoded).expect("decoded payload should be valid A2AEnvelope");
+            match envelope {
+                A2AEnvelope::Task(t) => {
+                    assert_eq!(t.to, "02aabb");
+                    assert_eq!(t.text(), Some("hello"));
+                }
+                _ => panic!("expected A2AEnvelope::Task"),
+            }
         }
     }
 }

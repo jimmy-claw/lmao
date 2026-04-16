@@ -252,7 +252,7 @@ Item {
                                 text: "Send"
                                 enabled: taskPubkeyField.text.length > 0 && taskTextField.text.length > 0
                                 onClicked: {
-                                    var result = lmaoModule.sendTask(taskPubkeyField.text, taskTextField.text)
+                                    var result = lmaoModule.sendTaskViaDelivery(taskPubkeyField.text, taskTextField.text)
                                     root.lastResult = result
                                     // Record in task history
                                     if (historyView.item)
