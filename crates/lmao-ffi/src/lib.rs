@@ -1330,19 +1330,26 @@ mod tests {
         if v["success"] == true {
             // All 17 counter fields should be present
             let expected_fields = [
-                "tasks_sent", "tasks_received", "tasks_failed",
-                "messages_published", "messages_received",
-                "discoveries", "announcements_sent", "peers_discovered",
-                "encryptions", "decryptions", "sessions_created",
-                "delegations_sent", "stream_chunks_sent", "stream_chunks_received",
-                "retry_attempts", "retries_exhausted", "responses_sent",
+                "tasks_sent",
+                "tasks_received",
+                "tasks_failed",
+                "messages_published",
+                "messages_received",
+                "discoveries",
+                "announcements_sent",
+                "peers_discovered",
+                "encryptions",
+                "decryptions",
+                "sessions_created",
+                "delegations_sent",
+                "stream_chunks_sent",
+                "stream_chunks_received",
+                "retry_attempts",
+                "retries_exhausted",
+                "responses_sent",
             ];
             for field in &expected_fields {
-                assert!(
-                    v.get(*field).is_some(),
-                    "metrics missing field: {}",
-                    field
-                );
+                assert!(v.get(*field).is_some(), "metrics missing field: {}", field);
             }
         }
     }
