@@ -4,7 +4,8 @@ type: core
 category: network
 description: "LMAO — A2A agent discovery and task communication over Waku"
 
-dependencies: []
+dependencies:
+  - delivery_module
 
 nix_packages:
   build: []
@@ -22,3 +23,4 @@ cmake:
   extra_sources:
     - src/AgentListModel.cpp
     - src/LmaoBackend.cpp
+    - src/DeliveryTransport.cpp

@@ -7,6 +7,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::sync::OnceLock;
 
+use logos_messaging_a2a_core::topics;
 use logos_messaging_a2a_node::WakuA2ANode;
 use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 use tokio::runtime::Runtime;
@@ -205,6 +206,37 @@ pub extern "C" fn lmao_free_string(s: *mut c_char) {
         unsafe {
             let _ = CString::from_raw(s);
         }
+    }
+}
+
+/// Get agent info: identity, topics, and encryption status.
+///
+/// Returns: { "success": true, "public_key": "02...", "task_topic": "...",
+///            "discovery_topic": "...", "presence_topic": "...", "encryption": false }
+#[no_mangle]
+pub extern "C" fn lmao_get_info() -> *mut c_char {
+    let node = get_or_init_node();
+    let pubkey = node.pubkey();
+    let encrypt = node.card.intro_bundle.is_some();
+    success_json(serde_json::json!({
+        "public_key": pubkey,
+        "task_topic": topics::task_topic(pubkey),
+        "discovery_topic": topics::DISCOVERY,
+        "presence_topic": topics::PRESENCE,
+        "encryption": encrypt,
+    }))
+}
+
+/// Get operational metrics counters.
+///
+/// Returns: { "success": true, "tasks_sent": 0, "tasks_received": 0, ... }
+#[no_mangle]
+pub extern "C" fn lmao_get_metrics() -> *mut c_char {
+    let node = get_or_init_node();
+    let snapshot = node.metrics();
+    match serde_json::to_value(&snapshot) {
+        Ok(v) => success_json(v),
+        Err(e) => error_json(&format!("metrics serialization error: {}", e)),
     }
 }
 
@@ -1241,6 +1273,95 @@ mod tests {
         }
         for ptr in ptrs {
             lmao_free_string(ptr);
+        }
+    }
+
+    // ── lmao_get_info tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_get_info_returns_valid_json() {
+        // get_info triggers node init; it may fail without a running Waku
+        // node, but should still return valid JSON with a "success" key.
+        let ptr = lmao_get_info();
+        assert!(!ptr.is_null());
+        let v = unsafe { read_json_and_free(ptr) };
+        assert!(v.is_object());
+        assert!(v.get("success").is_some());
+    }
+
+    #[test]
+    fn test_get_info_non_null() {
+        let ptr = lmao_get_info();
+        assert!(!ptr.is_null());
+        lmao_free_string(ptr);
+    }
+
+    #[test]
+    fn test_get_info_idempotent() {
+        let v1 = unsafe { read_json_and_free(lmao_get_info()) };
+        let v2 = unsafe { read_json_and_free(lmao_get_info()) };
+        // Both calls should return the same public key
+        if v1["success"] == true && v2["success"] == true {
+            assert_eq!(v1["public_key"], v2["public_key"]);
+        }
+    }
+
+    // ── lmao_get_metrics tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_get_metrics_returns_valid_json() {
+        let ptr = lmao_get_metrics();
+        assert!(!ptr.is_null());
+        let v = unsafe { read_json_and_free(ptr) };
+        assert!(v.is_object());
+        assert!(v.get("success").is_some());
+    }
+
+    #[test]
+    fn test_get_metrics_non_null() {
+        let ptr = lmao_get_metrics();
+        assert!(!ptr.is_null());
+        lmao_free_string(ptr);
+    }
+
+    #[test]
+    fn test_get_metrics_has_counter_fields() {
+        let v = unsafe { read_json_and_free(lmao_get_metrics()) };
+        if v["success"] == true {
+            // All 17 counter fields should be present
+            let expected_fields = [
+                "tasks_sent",
+                "tasks_received",
+                "tasks_failed",
+                "messages_published",
+                "messages_received",
+                "discoveries",
+                "announcements_sent",
+                "peers_discovered",
+                "encryptions",
+                "decryptions",
+                "sessions_created",
+                "delegations_sent",
+                "stream_chunks_sent",
+                "stream_chunks_received",
+                "retry_attempts",
+                "retries_exhausted",
+                "responses_sent",
+            ];
+            for field in &expected_fields {
+                assert!(v.get(*field).is_some(), "metrics missing field: {}", field);
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_metrics_counters_start_at_zero() {
+        let v = unsafe { read_json_and_free(lmao_get_metrics()) };
+        if v["success"] == true {
+            // On a fresh node with no activity, all counters should be 0
+            assert_eq!(v["tasks_sent"], 0);
+            assert_eq!(v["tasks_received"], 0);
+            assert_eq!(v["tasks_failed"], 0);
         }
     }
 }

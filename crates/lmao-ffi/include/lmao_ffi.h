@@ -41,6 +41,21 @@ char *lmao_get_agent_card(void);
 void lmao_free_string(char *s);
 
 /**
+ * Get agent info: identity, topics, and encryption status.
+ *
+ * Returns: { "success": true, "public_key": "02...", "task_topic": "...",
+ *            "discovery_topic": "...", "presence_topic": "...", "encryption": false }
+ */
+char *lmao_get_info(void);
+
+/**
+ * Get operational metrics counters.
+ *
+ * Returns: { "success": true, "tasks_sent": 0, "tasks_received": 0, ... }
+ */
+char *lmao_get_metrics(void);
+
+/**
  * Returns the version string of this FFI library.
  */
 char *lmao_version(void);

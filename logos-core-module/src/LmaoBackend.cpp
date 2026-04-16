@@ -1,4 +1,5 @@
 #include "LmaoBackend.h"
+#include "DeliveryTransport.h"
 
 #include <QDebug>
 #include <QJsonDocument>
@@ -13,9 +14,15 @@ extern "C" {
 }
 #endif
 
-LmaoBackend::LmaoBackend(QObject* parent)
+LmaoBackend::LmaoBackend(DeliveryTransport* delivery, QObject* parent)
     : QObject(parent)
+    , m_delivery(delivery)
 {
+    if (m_delivery) {
+        qDebug() << "LmaoBackend: using QtRO delivery transport";
+    } else {
+        qDebug() << "LmaoBackend: no QtRO transport — using FFI only";
+    }
 }
 
 /*static*/
@@ -61,4 +68,30 @@ QString LmaoBackend::getAgentCard()
 {
     qDebug() << "LmaoBackend::getAgentCard";
     return callFfiStr(lmao_get_agent_card());
+}
+
+QString LmaoBackend::getInfo()
+{
+    qDebug() << "LmaoBackend::getInfo";
+    return callFfiStr(lmao_get_info());
+}
+
+QString LmaoBackend::getMetrics()
+{
+    qDebug() << "LmaoBackend::getMetrics";
+    return callFfiStr(lmao_get_metrics());
+}
+
+bool LmaoBackend::deliverySend(const QString& contentTopic, const QByteArray& payload)
+{
+    if (!m_delivery) {
+        qDebug() << "LmaoBackend::deliverySend — no QtRO transport available";
+        return false;
+    }
+
+    bool ok = m_delivery->send(contentTopic, payload);
+    if (!ok) {
+        emit errorOccurred(QStringLiteral("delivery_module send failed via QtRO"));
+    }
+    return ok;
 }
