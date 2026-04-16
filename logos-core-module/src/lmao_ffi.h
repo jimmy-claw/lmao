@@ -34,6 +34,21 @@ char *lmao_send_task(const char *args_json);
 char *lmao_get_agent_card(void);
 
 /**
+ * Get agent info: identity, topics, and encryption status.
+ *
+ * Returns: { "success": true, "public_key": "02...", "task_topic": "...",
+ *            "discovery_topic": "...", "presence_topic": "...", "encryption": false }
+ */
+char *lmao_get_info(void);
+
+/**
+ * Get operational metrics counters.
+ *
+ * Returns: { "success": true, "tasks_sent": 0, "tasks_received": 0, ... }
+ */
+char *lmao_get_metrics(void);
+
+/**
  * Free a string returned by any lmao_* function.
  */
 void lmao_free_string(char *s);

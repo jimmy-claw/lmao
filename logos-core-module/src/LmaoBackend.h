@@ -29,6 +29,8 @@ public:
     Q_INVOKABLE QString discoverAgents(const QString& timeoutMs);
     Q_INVOKABLE QString sendTask(const QString& agentPubkey, const QString& taskText);
     Q_INVOKABLE QString getAgentCard();
+    Q_INVOKABLE QString getInfo();
+    Q_INVOKABLE QString getMetrics();
 
     /// Send raw bytes to a content topic via QtRO delivery transport.
     /// Returns true if sent via QtRO, false if QtRO unavailable (caller should fall back).

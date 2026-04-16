@@ -70,6 +70,18 @@ QString LmaoBackend::getAgentCard()
     return callFfiStr(lmao_get_agent_card());
 }
 
+QString LmaoBackend::getInfo()
+{
+    qDebug() << "LmaoBackend::getInfo";
+    return callFfiStr(lmao_get_info());
+}
+
+QString LmaoBackend::getMetrics()
+{
+    qDebug() << "LmaoBackend::getMetrics";
+    return callFfiStr(lmao_get_metrics());
+}
+
 bool LmaoBackend::deliverySend(const QString& contentTopic, const QByteArray& payload)
 {
     if (!m_delivery) {
