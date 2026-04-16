@@ -2,6 +2,13 @@
 //!
 //! All functions accept/return JSON strings (UTF-8, null-terminated).
 //! Caller must free returned strings with lmao_free_string().
+//!
+//! ## Transport selection
+//!
+//! - **Default (REST)**: uses nwaku REST API via `WAKU_URL` env var (default `http://localhost:8645`).
+//! - **`logos-core` feature**: uses `LogosCoreDeliveryTransport` — inter-module IPC via
+//!   `logos_core_call_plugin_method_async` to the `delivery_module` plugin. This is the
+//!   transport used when running inside Logos Core as a plugin (issue #77, #143).
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -9,8 +16,18 @@ use std::sync::OnceLock;
 
 use logos_messaging_a2a_core::topics;
 use logos_messaging_a2a_node::WakuA2ANode;
-use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 use tokio::runtime::Runtime;
+
+#[cfg(feature = "logos-core")]
+use logos_messaging_a2a_transport::LogosCoreDeliveryTransport;
+#[cfg(not(feature = "logos-core"))]
+use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
+
+/// The concrete transport type used by this build.
+#[cfg(feature = "logos-core")]
+type NodeTransport = LogosCoreDeliveryTransport;
+#[cfg(not(feature = "logos-core"))]
+type NodeTransport = LogosMessagingTransport;
 
 /// Global tokio runtime for async operations.
 fn runtime() -> &'static Runtime {
@@ -19,16 +36,34 @@ fn runtime() -> &'static Runtime {
 }
 
 /// Global node instance (lazy-initialized on first call).
-static NODE: OnceLock<WakuA2ANode<LogosMessagingTransport>> = OnceLock::new();
+static NODE: OnceLock<WakuA2ANode<NodeTransport>> = OnceLock::new();
 
 /// Returns a reference to the lazily-initialized global node, creating it on the
-/// first call using the `WAKU_URL` environment variable (defaults to `http://localhost:8645`).
-/// The node is announced on the Waku network as part of initialization.
-fn get_or_init_node() -> &'static WakuA2ANode<LogosMessagingTransport> {
+/// first call.
+///
+/// - With `logos-core` feature: uses `LogosCoreDeliveryTransport` to communicate via
+///   the `delivery_module` plugin over Logos Core IPC (QtRO inter-module calls).
+///   Reads `DELIVERY_CFG` env var for node config JSON (default `{}`).
+/// - Without: uses nwaku REST transport via `WAKU_URL` env var (default `http://localhost:8645`).
+fn get_or_init_node() -> &'static WakuA2ANode<NodeTransport> {
     NODE.get_or_init(|| {
-        let waku_url =
-            std::env::var("WAKU_URL").unwrap_or_else(|_| "http://localhost:8645".to_string());
-        let transport = LogosMessagingTransport::new(&waku_url);
+        let rt = runtime();
+
+        #[cfg(feature = "logos-core")]
+        let transport = {
+            let cfg =
+                std::env::var("DELIVERY_CFG").unwrap_or_else(|_| "{}".to_string());
+            rt.block_on(LogosCoreDeliveryTransport::new(&cfg))
+                .expect("failed to create LogosCoreDeliveryTransport — is delivery_module loaded?")
+        };
+
+        #[cfg(not(feature = "logos-core"))]
+        let transport = {
+            let waku_url =
+                std::env::var("WAKU_URL").unwrap_or_else(|_| "http://localhost:8645".to_string());
+            LogosMessagingTransport::new(&waku_url)
+        };
+
         let node = WakuA2ANode::new(
             "lmao-agent",
             "LMAO A2A agent via Logos Core",
@@ -37,7 +72,7 @@ fn get_or_init_node() -> &'static WakuA2ANode<LogosMessagingTransport> {
         );
 
         // Announce on startup
-        let _ = runtime().block_on(node.announce());
+        let _ = rt.block_on(node.announce());
 
         node
     })

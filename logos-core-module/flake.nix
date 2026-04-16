@@ -24,6 +24,9 @@
           };
         };
         buildAndTestSubdir = "crates/lmao-ffi";
+        # Enable logos-core feature so the FFI uses LogosCoreDeliveryTransport
+        # (delivery_module IPC) instead of nwaku REST when running as a Logos Core plugin.
+        buildFeatures = [ "logos-core" ];
         # We only need the cdylib, skip tests (they need network).
         doCheck = false;
         postInstall = ''
