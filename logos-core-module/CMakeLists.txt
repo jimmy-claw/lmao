@@ -49,6 +49,7 @@ add_library(${MODULE_TARGET} SHARED
     src/LmaoComponent.cpp
     src/LmaoBackend.cpp
     src/AgentListModel.cpp
+    src/DeliveryTransport.cpp
     qml/qml.qrc
 )
 

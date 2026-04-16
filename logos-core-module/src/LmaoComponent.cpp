@@ -1,6 +1,7 @@
 #include "LmaoComponent.h"
 #include "LmaoBackend.h"
 #include "AgentListModel.h"
+#include "DeliveryTransport.h"
 
 #include <QQuickWidget>
 #include <QQmlContext>
@@ -52,15 +53,27 @@ void LmaoComponent::initialize()
     m_initialized = true;
 }
 
-QWidget* LmaoComponent::createWidget(LogosAPI* /*logosAPI*/)
+QWidget* LmaoComponent::createWidget(LogosAPI* logosAPI)
 {
     initialize();
+
+    // Store logosAPI and set up QtRO delivery transport (issue #77).
+    m_logosAPI = logosAPI;
+    if (logosAPI && !m_delivery) {
+        m_delivery = new DeliveryTransport(this);
+        if (m_delivery->init(logosAPI)) {
+            qDebug() << "LmaoComponent: delivery transport connected via QtRO";
+        } else {
+            qWarning() << "LmaoComponent: delivery transport init failed — "
+                           "falling back to FFI transport";
+        }
+    }
 
     auto* widget = new QQuickWidget();
     widget->setMinimumSize(500, 400);
     widget->setResizeMode(QQuickWidget::SizeRootObjectToView);
 
-    auto* backend = new LmaoBackend();
+    auto* backend = new LmaoBackend(m_delivery);
     backend->setParent(widget);
 
     auto* model = new AgentListModel();
@@ -68,6 +81,7 @@ QWidget* LmaoComponent::createWidget(LogosAPI* /*logosAPI*/)
 
     widget->rootContext()->setContextProperty("lmaoModule", backend);
     widget->rootContext()->setContextProperty("lmaoAgentModel", model);
+    widget->rootContext()->setContextProperty("lmaoDelivery", m_delivery);
     widget->setSource(QUrl("qrc:/lmao/LmaoView.qml"));
 
     return widget;
