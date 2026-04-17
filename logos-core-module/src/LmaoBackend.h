@@ -11,9 +11,10 @@ class DeliveryTransport;
  * Exposes agent discovery, task sending, and agent card retrieval
  * as Q_INVOKABLE methods callable from QML.
  *
- * When a DeliveryTransport (QtRO) is available, message sending uses
- * the delivery_module via QtRO inter-module calls (issue #77).
- * Falls back to Rust FFI transport when QtRO is unavailable.
+ * When a DeliveryTransport (QtRO) is available, all message sending
+ * automatically uses the real logos-delivery-module via QtRO inter-module
+ * calls (issue #77, #143). Falls back to Rust FFI transport when QtRO
+ * is unavailable.
  */
 class LmaoBackend : public QObject {
     Q_OBJECT
@@ -36,8 +37,8 @@ public:
     /// Returns true if sent via QtRO, false if QtRO unavailable (caller should fall back).
     Q_INVOKABLE bool deliverySend(const QString& contentTopic, const QByteArray& payload);
 
-    /// Send a task via QtRO delivery transport if available, falling back to FFI.
-    /// This is the preferred path when running inside Logos Core (issue #143).
+    /// Deprecated: sendTask() now automatically uses QtRO delivery when available.
+    /// Kept for backwards compatibility with existing QML code.
     Q_INVOKABLE QString sendTaskViaDelivery(const QString& agentPubkey, const QString& taskText);
 
 signals:
