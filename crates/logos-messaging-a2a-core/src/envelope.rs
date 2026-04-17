@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentCard;
 use crate::presence::PresenceAnnouncement;
+use crate::skill::SkillAnnouncement;
 use crate::task::{Task, TaskStreamChunk};
 
 /// Wire envelope for all messages on Waku topics.
@@ -32,6 +33,8 @@ pub enum A2AEnvelope {
     Presence(PresenceAnnouncement),
     /// A streaming chunk carrying incremental task output (e.g. LLM tokens).
     StreamChunk(TaskStreamChunk),
+    /// A skill announcement for the decentralized skill marketplace.
+    SkillAnnouncement(SkillAnnouncement),
 }
 
 #[cfg(test)]
@@ -296,6 +299,18 @@ mod tests {
                 chunk_index: 0,
                 text: "x".into(),
                 is_final: false,
+            }),
+            A2AEnvelope::SkillAnnouncement(SkillAnnouncement {
+                skill: crate::skill::SkillDescriptor {
+                    skill_id: "s".into(),
+                    content_hash: "h".into(),
+                    author_pubkey: "a".into(),
+                    version: "1.0.0".into(),
+                    description: "d".into(),
+                    tags: vec![],
+                    timestamp: 0,
+                },
+                is_update: false,
             }),
         ];
         let mut type_tags: Vec<String> = Vec::new();
