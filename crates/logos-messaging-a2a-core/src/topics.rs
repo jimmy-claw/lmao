@@ -8,6 +8,10 @@ pub const DISCOVERY: &str = "/waku-a2a/1/discovery/proto";
 /// All agents subscribe on startup to discover live peers.
 pub const PRESENCE: &str = "/lmao/1/presence/proto";
 
+/// Well-known topic for skill marketplace announcements.
+/// Agents subscribe here to discover new and updated skills.
+pub const SKILLS: &str = "/lmao/1/skills/proto";
+
 /// Returns the Waku content topic where a specific agent receives tasks.
 ///
 /// Each agent listens on a topic derived from its compressed secp256k1
@@ -44,6 +48,11 @@ mod tests {
     #[test]
     fn test_presence_topic() {
         assert_eq!(PRESENCE, "/lmao/1/presence/proto");
+    }
+
+    #[test]
+    fn test_skills_topic() {
+        assert_eq!(SKILLS, "/lmao/1/skills/proto");
     }
 
     #[test]
