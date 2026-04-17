@@ -5,5 +5,8 @@
     <file>Theme.qml</file>
     <file>LmaoView.qml</file>
     <file>AgentCard.qml</file>
+    <file>DashboardView.qml</file>
+    <file>MetricsView.qml</file>
+    <file>TaskHistoryView.qml</file>
   </qresource>
 </RCC>

@@ -14,6 +14,8 @@ pub mod payment;
 pub mod presence;
 pub mod retry;
 pub mod session;
+/// Decentralized skill marketplace — publish, discover, rank, auto-adopt.
+pub mod skills;
 pub mod storage;
 mod streaming;
 mod tasks;

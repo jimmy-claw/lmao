@@ -27,6 +27,10 @@ pub mod presence;
 pub mod registry;
 /// Exponential-backoff retry configuration.
 pub mod retry;
+/// Skill marketplace types for decentralized skill sharing.
+pub mod skill;
+/// Skill registry trait for on-chain skill registration and rating.
+pub mod skill_registry;
 /// Task lifecycle types and message parts.
 pub mod task;
 pub mod topics;
