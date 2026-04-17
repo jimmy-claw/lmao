@@ -2,8 +2,9 @@
 //!
 //! Provides a unified [`Transport`] trait with multiple backend implementations:
 //!
+//! - **Logos Core** (`logos-core` feature): primary transport for Logos Core integration — uses the
+//!   real `logos-co/logos-delivery-module` via QtRO inter-module IPC (issue #143).
 //! - **REST** (`rest` feature): nwaku REST API transport for communicating with a running nwaku node.
-//! - **Logos Core** (`logos-core` feature): native IPC transport via the Logos Core `delivery_module` plugin.
 //! - **Native Waku** (`native-waku` feature): libwaku FFI transport via the `waku-bindings` crate.
 //! - **In-memory**: zero-dependency mock transport for testing (`memory` module, always available).
 //!

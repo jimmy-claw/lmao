@@ -7,6 +7,7 @@
 //! |---------|-------------|-------------|
 //! | [`LogosStorageRest`] | `rest` (default) | Standalone processes talking to a Codex REST API |
 //! | `LogosCoreStorageBackend` | `logos-core` | Inside a Logos Core host process (desktop client) |
+//! | `StorageModuleClient` | `storage-module` | Managed logos-storage-module instance (headless, throttled) |
 //!
 //! # Example (REST)
 //!
@@ -38,6 +39,11 @@ pub use logos_core_backend::LogosCoreStorageBackend;
 mod libstorage_backend;
 #[cfg(feature = "libstorage")]
 pub use libstorage_backend::LibstorageBackend;
+
+#[cfg(feature = "storage-module")]
+mod storage_module_client;
+#[cfg(feature = "storage-module")]
+pub use storage_module_client::StorageModuleClient;
 
 use std::fmt;
 

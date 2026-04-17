@@ -1,8 +1,10 @@
 //! Logos Core delivery-module transport — native IPC via `logos_core_call_plugin_method_async`.
 //!
-//! Communicates with the `delivery_module` plugin through Logos Core's C IPC layer
-//! instead of the nwaku REST API. Requires the `logos-core` feature and linking
-//! against `liblogos_core`.
+//! Primary transport for running inside Logos Core (issue #143). Communicates with
+//! the real `logos-co/logos-delivery-module` plugin through Logos Core's C IPC layer
+//! using QtRO inter-module calls, replacing the nwaku REST API.
+//!
+//! Requires the `logos-core` feature and linking against `liblogos_core`.
 
 use crate::logos_core;
 use crate::Transport;
@@ -29,10 +31,12 @@ fn params_json(pairs: &[(&str, &str)]) -> String {
     format!("[{}]", entries.join(","))
 }
 
-/// Transport implementation backed by Logos Core IPC to the `delivery_module` plugin.
+/// Transport implementation backed by Logos Core IPC to the real `logos-co/logos-delivery-module`.
 ///
+/// This is the primary transport when running as a Logos Core plugin (issue #143).
 /// Uses `logos_core_call_plugin_method_async` for publish/subscribe/unsubscribe and
 /// `logos_core_register_event_listener` for receiving messages via the `messageReceived` event.
+/// The A2A message envelope format is preserved — only the transport layer is swapped.
 pub struct LogosCoreDeliveryTransport {
     subscriptions: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Vec<u8>>>>>,
     /// Keep the event listener state alive so the FFI callback pointer stays valid.
