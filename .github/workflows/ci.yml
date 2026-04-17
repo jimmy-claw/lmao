@@ -43,6 +43,21 @@ jobs:
       - name: Check rustdoc warnings
         run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
+  mcp-check:
+    name: MCP Config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate .mcp.json syntax
+        run: python3 -c "import json; json.load(open('.mcp.json'))"
+      - name: Verify logos-dev-boost files exist
+        run: |
+          test -f AGENTS.md
+          test -f CLAUDE.md
+          test -f .mcp.json
+          test -d .claude/skills
+          echo "All logos-dev-boost files present"
+
   fmt:
     name: Format
     runs-on: ubuntu-latest

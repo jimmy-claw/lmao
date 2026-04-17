@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "logos-dev-boost": {
+      "command": "npx",
+      "args": ["-y", "logos-dev-boost@latest", "mcp-server"]
+    }
+  }
+}
