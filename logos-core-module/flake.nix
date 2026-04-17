@@ -4,12 +4,20 @@
   inputs = {
     logos-module-builder.url = "github:logos-co/logos-module-builder";
     nixpkgs.follows = "logos-module-builder/nixpkgs";
+    logos-delivery-module = {
+      url = "github:logos-co/logos-delivery-module";
+      inputs.logos-module-builder.follows = "logos-module-builder";
+    };
   };
 
-  outputs = { self, logos-module-builder, nixpkgs }:
+  outputs = { self, logos-module-builder, nixpkgs, logos-delivery-module }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+
+      # Real delivery_module plugin from logos-co/logos-delivery-module.
+      # Provides liblogosdelivery (Waku transport) as a Logos Core module.
+      delivery-module = logos-delivery-module.packages.${system}.default;
 
       # Build the lmao-ffi Rust crate from the parent workspace.
       lmao-ffi = pkgs.rustPlatform.buildRustPackage {
@@ -24,6 +32,9 @@
           };
         };
         buildAndTestSubdir = "crates/lmao-ffi";
+        # Enable logos-core feature so the FFI uses LogosCoreDeliveryTransport
+        # (delivery_module IPC) instead of nwaku REST when running as a Logos Core plugin.
+        buildFeatures = [ "logos-core" ];
         # We only need the cdylib, skip tests (they need network).
         doCheck = false;
         postInstall = ''
@@ -46,6 +57,7 @@
               qt6.qtdeclarative
               qt6.qtquick3d
               lmao-ffi
+              delivery-module
             ];
             cmakeFlags = [
               "-DLMAO_FFI_LIB=${lmao-ffi}/lib"

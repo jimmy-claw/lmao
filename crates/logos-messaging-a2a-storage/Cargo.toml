@@ -9,6 +9,7 @@ default = ["rest"]
 rest = ["reqwest"]
 logos-core = ["base64"]
 libstorage = ["dep:storage-bindings", "dep:tempfile"]
+storage-module = ["dep:storage-bindings", "dep:tempfile"]
 
 [dependencies]
 tokio = { workspace = true }
@@ -23,6 +24,7 @@ base64 = { version = "0.22", optional = true }
 # Libstorage native backend
 storage-bindings = { version = "0.2", optional = true }
 tempfile = { version = "3", optional = true }
+
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

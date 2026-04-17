@@ -75,9 +75,9 @@
 │  │                                                         │         │
 │  ├─────────────────────────────────────────────────────────┤         │
 │  │                                                         │         │
-│  │  NwakuRestTransport        LogosDeliveryTransport       │         │
-│  │  (v0.1 — REST fallback)    (planned — issue #57)        │         │
-│  │  http://localhost:8645     logos-delivery-rust-bindings  │         │
+│  │  NwakuRestTransport        LogosCoreDeliveryTransport   │         │
+│  │  (default — REST)          (logos-core feature, #143)    │         │
+│  │  http://localhost:8645     delivery_module IPC (QtRO)    │         │
 │  │                                                         │         │
 │  └─────────────────────────┬──────────────────────────────┘         │
 │                            │                                         │
