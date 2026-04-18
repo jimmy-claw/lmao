@@ -2545,6 +2545,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "reqwest",
+ "serde_json",
  "storage-bindings",
  "tempfile",
  "tokio",

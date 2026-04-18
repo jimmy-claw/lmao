@@ -55,6 +55,13 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 
+[features]
+default = ["storage-module"]
+storage-module = [
+    "logos-messaging-a2a-storage/storage-module",
+    "logos-messaging-a2a-node/storage-module",
+]
+
 [[example]]
 name = "echo_agent"
 path = "examples/echo_agent.rs"
