@@ -22,3 +22,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = []
+storage-module = ["logos-messaging-a2a-storage/storage-module"]

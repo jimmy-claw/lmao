@@ -407,6 +407,24 @@ impl<T: Transport> WakuA2ANode<T> {
         self
     }
 
+    /// Enable CID-based offloading via a `logos-storage-module` instance.
+    ///
+    /// Convenience wrapper that creates a [`StorageModuleClient`] from the given
+    /// config and wires it into the storage offload pipeline with the specified
+    /// payload size threshold (in bytes).
+    ///
+    /// Requires the `storage-module` feature.
+    #[cfg(feature = "storage-module")]
+    pub fn with_storage_module(
+        self,
+        config: logos_messaging_a2a_storage::StorageModuleConfig,
+        threshold_bytes: usize,
+    ) -> Self {
+        let client = logos_messaging_a2a_storage::StorageModuleClient::new_unchecked(config);
+        let offload = StorageOffloadConfig::with_threshold(Arc::new(client), threshold_bytes);
+        self.with_storage_offload(offload)
+    }
+
     /// Enable x402-style payment flow via an [`ExecutionBackend`](logos_messaging_a2a_execution::ExecutionBackend).
     ///
     /// When configured, outgoing tasks can auto-pay and incoming tasks can
