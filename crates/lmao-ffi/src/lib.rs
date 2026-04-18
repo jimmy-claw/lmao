@@ -2,14 +2,32 @@
 //!
 //! All functions accept/return JSON strings (UTF-8, null-terminated).
 //! Caller must free returned strings with lmao_free_string().
+//!
+//! ## Transport selection
+//!
+//! - **Default (REST)**: uses nwaku REST API via `WAKU_URL` env var (default `http://localhost:8645`).
+//! - **`logos-core` feature**: uses `LogosCoreDeliveryTransport` — inter-module IPC via
+//!   `logos_core_call_plugin_method_async` to the `delivery_module` plugin. This is the
+//!   transport used when running inside Logos Core as a plugin (issue #77, #143).
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::sync::OnceLock;
 
+use logos_messaging_a2a_core::topics;
 use logos_messaging_a2a_node::WakuA2ANode;
-use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
 use tokio::runtime::Runtime;
+
+#[cfg(not(feature = "logos-core"))]
+use logos_messaging_a2a_transport::nwaku_rest::LogosMessagingTransport;
+#[cfg(feature = "logos-core")]
+use logos_messaging_a2a_transport::LogosCoreDeliveryTransport;
+
+/// The concrete transport type used by this build.
+#[cfg(feature = "logos-core")]
+type NodeTransport = LogosCoreDeliveryTransport;
+#[cfg(not(feature = "logos-core"))]
+type NodeTransport = LogosMessagingTransport;
 
 /// Global tokio runtime for async operations.
 fn runtime() -> &'static Runtime {
@@ -18,16 +36,33 @@ fn runtime() -> &'static Runtime {
 }
 
 /// Global node instance (lazy-initialized on first call).
-static NODE: OnceLock<WakuA2ANode<LogosMessagingTransport>> = OnceLock::new();
+static NODE: OnceLock<WakuA2ANode<NodeTransport>> = OnceLock::new();
 
 /// Returns a reference to the lazily-initialized global node, creating it on the
-/// first call using the `WAKU_URL` environment variable (defaults to `http://localhost:8645`).
-/// The node is announced on the Waku network as part of initialization.
-fn get_or_init_node() -> &'static WakuA2ANode<LogosMessagingTransport> {
+/// first call.
+///
+/// - With `logos-core` feature: uses `LogosCoreDeliveryTransport` to communicate via
+///   the `delivery_module` plugin over Logos Core IPC (QtRO inter-module calls).
+///   Reads `DELIVERY_CFG` env var for node config JSON (default `{}`).
+/// - Without: uses nwaku REST transport via `WAKU_URL` env var (default `http://localhost:8645`).
+fn get_or_init_node() -> &'static WakuA2ANode<NodeTransport> {
     NODE.get_or_init(|| {
-        let waku_url =
-            std::env::var("WAKU_URL").unwrap_or_else(|_| "http://localhost:8645".to_string());
-        let transport = LogosMessagingTransport::new(&waku_url);
+        let rt = runtime();
+
+        #[cfg(feature = "logos-core")]
+        let transport = {
+            let cfg = std::env::var("DELIVERY_CFG").unwrap_or_else(|_| "{}".to_string());
+            rt.block_on(LogosCoreDeliveryTransport::new(&cfg))
+                .expect("failed to create LogosCoreDeliveryTransport — is delivery_module loaded?")
+        };
+
+        #[cfg(not(feature = "logos-core"))]
+        let transport = {
+            let waku_url =
+                std::env::var("WAKU_URL").unwrap_or_else(|_| "http://localhost:8645".to_string());
+            LogosMessagingTransport::new(&waku_url)
+        };
+
         let node = WakuA2ANode::new(
             "lmao-agent",
             "LMAO A2A agent via Logos Core",
@@ -36,7 +71,7 @@ fn get_or_init_node() -> &'static WakuA2ANode<LogosMessagingTransport> {
         );
 
         // Announce on startup
-        let _ = runtime().block_on(node.announce());
+        let _ = rt.block_on(node.announce());
 
         node
     })
@@ -179,6 +214,61 @@ pub extern "C" fn lmao_send_task(args_json: *const c_char) -> *mut c_char {
     }
 }
 
+/// Build a task envelope without sending it — for use with external transports (QtRO).
+///
+/// args_json: { "agent_pubkey": "02...", "task_text": "Hello" }
+///
+/// Returns: { "success": true, "task_id": "...", "topic": "/lmao/1/task/...",
+///            "payload_b64": "<base64-encoded A2A envelope>" }
+///
+/// The caller (e.g. C++ DeliveryTransport) can send the payload to the topic
+/// via QtRO inter-module call to delivery_module, bypassing the Rust transport (issue #143).
+#[no_mangle]
+pub extern "C" fn lmao_build_task_envelope(args_json: *const c_char) -> *mut c_char {
+    use logos_messaging_a2a_core::{A2AEnvelope, Task};
+
+    let s = match cstr_to_str(args_json) {
+        Ok(s) => s,
+        Err(e) => return error_json(&e),
+    };
+
+    let v: serde_json::Value = match serde_json::from_str(s) {
+        Ok(v) => v,
+        Err(e) => return error_json(&format!("JSON parse error: {}", e)),
+    };
+
+    let agent_pubkey = match v.get("agent_pubkey").and_then(|s| s.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_json("missing 'agent_pubkey'"),
+    };
+
+    let task_text = match v.get("task_text").and_then(|s| s.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_json("missing 'task_text'"),
+    };
+
+    let node = get_or_init_node();
+    let task = Task::new(node.pubkey(), &agent_pubkey, &task_text);
+    let topic = topics::task_topic(&agent_pubkey);
+
+    let envelope = A2AEnvelope::Task(task.clone());
+    let envelope_bytes = match serde_json::to_vec(&envelope) {
+        Ok(b) => b,
+        Err(e) => return error_json(&format!("envelope serialization error: {}", e)),
+    };
+
+    use base64::Engine;
+    let payload_b64 = base64::engine::general_purpose::STANDARD.encode(&envelope_bytes);
+
+    success_json(serde_json::json!({
+        "task_id": task.id,
+        "from": task.from,
+        "to": task.to,
+        "topic": topic,
+        "payload_b64": payload_b64,
+    }))
+}
+
 /// Get this agent's card as JSON.
 ///
 /// Returns: { "success": true, "card": { "name": "...", ... } }
@@ -208,6 +298,37 @@ pub extern "C" fn lmao_free_string(s: *mut c_char) {
     }
 }
 
+/// Get agent info: identity, topics, and encryption status.
+///
+/// Returns: { "success": true, "public_key": "02...", "task_topic": "...",
+///            "discovery_topic": "...", "presence_topic": "...", "encryption": false }
+#[no_mangle]
+pub extern "C" fn lmao_get_info() -> *mut c_char {
+    let node = get_or_init_node();
+    let pubkey = node.pubkey();
+    let encrypt = node.card.intro_bundle.is_some();
+    success_json(serde_json::json!({
+        "public_key": pubkey,
+        "task_topic": topics::task_topic(pubkey),
+        "discovery_topic": topics::DISCOVERY,
+        "presence_topic": topics::PRESENCE,
+        "encryption": encrypt,
+    }))
+}
+
+/// Get operational metrics counters.
+///
+/// Returns: { "success": true, "tasks_sent": 0, "tasks_received": 0, ... }
+#[no_mangle]
+pub extern "C" fn lmao_get_metrics() -> *mut c_char {
+    let node = get_or_init_node();
+    let snapshot = node.metrics();
+    match serde_json::to_value(&snapshot) {
+        Ok(v) => success_json(v),
+        Err(e) => error_json(&format!("metrics serialization error: {}", e)),
+    }
+}
+
 /// Returns the version string of this FFI library.
 #[no_mangle]
 pub extern "C" fn lmao_version() -> *mut c_char {
@@ -217,6 +338,7 @@ pub extern "C" fn lmao_version() -> *mut c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use logos_messaging_a2a_core::{A2AEnvelope, AgentCard, Message, Part, Task, TaskState};
 
     /// Helper: read a *mut c_char back into a String, then free it.
@@ -1241,6 +1363,127 @@ mod tests {
         }
         for ptr in ptrs {
             lmao_free_string(ptr);
+        }
+    }
+
+    // ── lmao_build_task_envelope tests ────────────────────────────────────
+
+    #[test]
+    fn test_build_task_envelope_null_pointer() {
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(std::ptr::null())) };
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error"], "null pointer");
+    }
+
+    #[test]
+    fn test_build_task_envelope_invalid_json() {
+        let input = CString::new("not json").unwrap();
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(input.as_ptr())) };
+        assert_eq!(v["success"], false);
+        assert!(v["error"].as_str().unwrap().contains("JSON parse error"));
+    }
+
+    #[test]
+    fn test_build_task_envelope_missing_agent_pubkey() {
+        let input = CString::new(r#"{"task_text": "hello"}"#).unwrap();
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(input.as_ptr())) };
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error"], "missing 'agent_pubkey'");
+    }
+
+    #[test]
+    fn test_build_task_envelope_missing_task_text() {
+        let input = CString::new(r#"{"agent_pubkey": "02aabb"}"#).unwrap();
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(input.as_ptr())) };
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error"], "missing 'task_text'");
+    }
+
+    #[test]
+    fn test_build_task_envelope_returns_envelope_fields() {
+        let input = CString::new(r#"{"agent_pubkey": "02aabb", "task_text": "hello"}"#).unwrap();
+        let v = unsafe { read_json_and_free(lmao_build_task_envelope(input.as_ptr())) };
+        // This triggers node init — if it succeeds, check envelope fields
+        if v["success"] == true {
+            assert!(v["task_id"].is_string());
+            assert!(v["topic"].as_str().unwrap().contains("/waku-a2a/"));
+            assert!(v["payload_b64"].is_string());
+            assert_eq!(v["to"], "02aabb");
+
+            // Verify payload_b64 is valid base64 that decodes to a valid A2A envelope
+            let b64 = v["payload_b64"].as_str().unwrap();
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .expect("payload_b64 should be valid base64");
+            let envelope: A2AEnvelope = serde_json::from_slice(&decoded)
+                .expect("decoded payload should be valid A2AEnvelope");
+            match envelope {
+                A2AEnvelope::Task(t) => {
+                    assert_eq!(t.to, "02aabb");
+                    assert_eq!(t.text(), Some("hello"));
+                }
+                _ => panic!("expected A2AEnvelope::Task"),
+            }
+        }
+    }
+
+    // ── lmao_get_info tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_get_info_returns_valid_json() {
+        let ptr = lmao_get_info();
+        assert!(!ptr.is_null());
+        let v = unsafe { read_json_and_free(ptr) };
+        assert!(v.is_object());
+        assert!(v.get("success").is_some());
+    }
+
+    #[test]
+    fn test_get_info_idempotent() {
+        let v1 = unsafe { read_json_and_free(lmao_get_info()) };
+        let v2 = unsafe { read_json_and_free(lmao_get_info()) };
+        if v1["success"] == true && v2["success"] == true {
+            assert_eq!(v1["public_key"], v2["public_key"]);
+        }
+    }
+
+    // ── lmao_get_metrics tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_get_metrics_returns_valid_json() {
+        let ptr = lmao_get_metrics();
+        assert!(!ptr.is_null());
+        let v = unsafe { read_json_and_free(ptr) };
+        assert!(v.is_object());
+        assert!(v.get("success").is_some());
+    }
+
+    #[test]
+    fn test_get_metrics_has_counter_fields() {
+        let v = unsafe { read_json_and_free(lmao_get_metrics()) };
+        if v["success"] == true {
+            let expected_fields = [
+                "tasks_sent",
+                "tasks_received",
+                "tasks_failed",
+                "messages_published",
+                "messages_received",
+                "discoveries",
+                "announcements_sent",
+                "peers_discovered",
+                "encryptions",
+                "decryptions",
+                "sessions_created",
+                "delegations_sent",
+                "stream_chunks_sent",
+                "stream_chunks_received",
+                "retry_attempts",
+                "retries_exhausted",
+                "responses_sent",
+            ];
+            for field in &expected_fields {
+                assert!(v.get(*field).is_some(), "metrics missing field: {}", field);
+            }
         }
     }
 }
