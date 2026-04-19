@@ -73,6 +73,23 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+  logos-dev-boost:
+    name: Logos Dev Boost
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify logos-dev-boost files
+        run: |
+          test -f CLAUDE.md
+          test -f AGENTS.md
+          test -f .mcp.json
+          test -d .claude/skills
+          echo "All logos-dev-boost files present"
+      - name: Validate MCP config
+        run: |
+          node -e "const c = require('./.mcp.json'); if (!c.mcpServers['logos-dev-boost']) { process.exit(1); }"
+          echo "MCP config valid"
+
   # Optional: end-to-end tests with nwaku Docker (manual trigger only)
   test-e2e:
     name: E2E Tests (nwaku)
